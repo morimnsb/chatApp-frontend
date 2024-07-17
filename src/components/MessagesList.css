@@ -1,0 +1,126 @@
+.messages-container {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: #f5f5f5;
+}
+
+.header-container {
+  padding: 20px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+}
+
+.messages-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.messages-header p {
+  font-size: 24px;
+  font-weight: bold;
+}
+
+.message-count {
+  font-size: 18px;
+  color: #888;
+  margin-left: 5px;
+}
+
+.search-input-group {
+  display: flex;
+  margin-bottom: 10px;
+}
+
+.add-button {
+  background-color: #007bff;
+  color: #fff;
+}
+
+.message-sort-dropdown {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.message-sort-dropdown span {
+  margin-right: 5px;
+}
+
+.message-dropdown-toggle {
+  color: #007bff;
+  text-decoration: none;
+  padding: 0;
+}
+
+.all-messages {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.message-img {
+  width: 20px;
+  height: 20px;
+}
+
+.message-list {
+  height: calc(100vh - 150px);
+  overflow-y: auto;
+}
+
+.message-list .list-group-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  border: none;
+}
+
+.message-list .list-group-item .subtext {
+  color: #888;
+  font-size: 14px;
+  flex-grow: 1;
+  margin-left: 10px;
+}
+
+.message-list .list-group-item .time-text {
+  color: #888;
+  font-size: 12px;
+}
+
+.message-list .list-group-item img.profile-img {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  margin-right: 10px;
+}
+
+.list-group-header {
+  background-color: #f0f0f0;
+  font-weight: bold;
+  font-size: 16px;
+}
+
+.loading-spinner {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+}
+
+.chat-window {
+  background-color: #fff;
+  border-left: 1px solid #ddd;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.no-chat-selected {
+  font-size: 24px;
+  color: #888;
+}

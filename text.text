@@ -1,0 +1,3 @@
+WebSocket State Management: Consider how you handle WebSocket states (OPEN, CLOSED, etc.) to manage user interactions appropriately.
+
+Security: For production environments, consider using wss:// for secure WebSocket connections instead of ws://.
