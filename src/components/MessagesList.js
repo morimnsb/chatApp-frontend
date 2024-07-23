@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   ListGroup,
   InputGroup,
@@ -16,7 +16,7 @@ import './MessagesList.css';
 import Message from '../assets/images/message/message.png';
 import ChatWindow from './ChatWindow';
 import { jwtDecode } from 'jwt-decode';
-import useChatWebSocket from './useChatWebSocket ';
+import useChatWebSocket from './useChatWebSocket';
 import useFetch from './useFetch';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -26,7 +26,20 @@ const MessagesList = () => {
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const accessToken = localStorage.getItem('access_token');
+  let decodedToken;
+
+  try {
+    decodedToken = jwtDecode(accessToken);
+  } catch (error) {
+    console.error('Error decoding access token:', error);
+  }
+
+  const currentUser = decodedToken?.user_id;
   const socketUrl = `ws://localhost:8000/ws/chat/?token=${accessToken}`;
+
+  useEffect(() => {
+    console.log('Attempting to connect to WebSocket with URL:', socketUrl);
+  }, [socketUrl]);
 
   const {
     data: individualMessages,
@@ -65,11 +78,8 @@ const MessagesList = () => {
 
   const handleGenerateRoomId = (receiverId) => {
     try {
-      const decodedToken = jwtDecode(accessToken);
-      const currentUser_id = decodedToken.user_id;
-
       const receiverIdStr = String(receiverId);
-      const currentUserIdStr = String(currentUser_id);
+      const currentUserIdStr = String(currentUser);
 
       const { BigInt } = window;
 
@@ -91,7 +101,7 @@ const MessagesList = () => {
 
       handleSelectChat(roomId);
     } catch (error) {
-      console.error('Error decoding access token:', error);
+      console.error('Error generating room ID:', error);
     }
   };
 
@@ -104,16 +114,19 @@ const MessagesList = () => {
     handleGenerateRoomId(user.id);
   };
 
-  const filteredIndividualMessages = individualMessages.filter((user) =>
+  const filteredIndividualMessages = individualMessages?.filter((user) =>
     user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
-  const filteredGroupMessages = groupMessages.filter((room) =>
+  const filteredGroupMessages = groupMessages?.filter((room) =>
     room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
   const totalFilteredMessages =
-    filteredIndividualMessages.length + filteredGroupMessages.length;
+    (filteredIndividualMessages?.length || 0) +
+    (filteredGroupMessages?.length || 0);
+
+  const filteredUsers = users?.filter((user) => user.id !== currentUser);
 
   return (
     <Container fluid className="messages-container">
@@ -167,7 +180,9 @@ const MessagesList = () => {
               <Spinner animation="border" />
             </div>
           ) : errorIndividual || errorGroup ? (
-            <Alert variant="danger">{errorIndividual || errorGroup}</Alert>
+            <Alert variant="danger">
+              {errorIndividual?.message || errorGroup?.message}
+            </Alert>
           ) : (
             <ListGroup>
               <ListGroup.Item disabled className="list-group-header">
@@ -193,6 +208,9 @@ const MessagesList = () => {
                   {user.is_online && (
                     <span className="online-status">Online</span>
                   )}
+                  <span className="unread_count">
+                    {user.unread_count}
+                  </span>
                 </ListGroup.Item>
               ))}
               <ListGroup.Item disabled className="list-group-header">
@@ -235,9 +253,9 @@ const MessagesList = () => {
           {loadingUsers ? (
             <Spinner animation="border" />
           ) : errorUsers ? (
-            <Alert variant="danger">{errorUsers}</Alert>
+            <Alert variant="danger">{errorUsers.message}</Alert>
           ) : (
-            users.map((user, index) => (
+            filteredUsers.map((user, index) => (
               <ListGroup.Item
                 key={index}
                 action
