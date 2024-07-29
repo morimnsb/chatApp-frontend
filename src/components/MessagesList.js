@@ -69,6 +69,10 @@ const MessagesList = () => {
       case 'user_offline_notification':
         toast.info(`User ${message.message} is now offline.`);
         break;
+      case 'new_message_notification':
+        toast.info(`New message from ${message.message.sender_first_name}.`);
+        
+        break;
       default:
         toast.info(`New message from ${message.message.sender_first_name}.`);
     }

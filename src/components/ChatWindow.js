@@ -3,24 +3,24 @@ import axios from 'axios';
 import { Form, Button, Spinner, Alert } from 'react-bootstrap';
 import './ChatWindow.css';
 import useWebSocket from 'react-use-websocket';
-import { jwtDecode } from 'jwt-decode';
+import {jwtDecode} from 'jwt-decode';
 
 const ChatWindow = ({ roomId }) => {
   const [messages, setMessages] = useState([]);
   const [messageInput, setMessageInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [typing, setTyping] = useState(null); // Track the user who is typing
+  const [typing, setTyping] = useState(null);
   const accessToken = localStorage.getItem('access_token');
   const socketUrl = `ws://localhost:8000/ws/chat/${roomId}/?token=${accessToken}`;
 
-  // Initialize useWebSocket hook
   const { sendMessage, lastMessage, readyState } = useWebSocket(socketUrl, {
     onOpen: () => console.log('WebSocket connection established'),
     onClose: () => console.log('WebSocket connection closed'),
     onError: (error) => setError(`WebSocket error: ${error.message}`),
-    shouldReconnect: (closeEvent) => true, // Automatically try to reconnect
+    shouldReconnect: () => true,
   });
+
   let decodedToken;
 
   try {
@@ -30,7 +30,7 @@ const ChatWindow = ({ roomId }) => {
   }
 
   const currentUser = decodedToken?.user_id;
-  // Function to fetch previous messages
+
   const fetchPreviousMessages = useCallback(async () => {
     setLoading(true);
     try {
@@ -53,17 +53,15 @@ const ChatWindow = ({ roomId }) => {
     }
   }, [accessToken, roomId]);
 
-  // Fetch previous messages when roomId or accessToken changes
   useEffect(() => {
     fetchPreviousMessages();
   }, [fetchPreviousMessages]);
 
-  // Process incoming WebSocket messages
   useEffect(() => {
     if (lastMessage !== null) {
       try {
         const message = JSON.parse(lastMessage.data);
-        console.log('Received WebSocket message:', message); // Debugging output
+        console.log('Received WebSocket message:', message);
 
         if (!message || !message.type) {
           console.error('Received message does not have a type:', message);
@@ -73,7 +71,24 @@ const ChatWindow = ({ roomId }) => {
         switch (message.type) {
           case 'message':
             if (message.message) {
-              setMessages((prevMessages) => [...prevMessages, message.message]);
+              // Update state with new message without duplicating
+              setMessages((prevMessages) => {
+                // Check if the message already exists
+                if (prevMessages.some((msg) => msg.id === message.message.id)) {
+                  return prevMessages;
+                }
+                return [...prevMessages, message.message];
+              });
+
+              // Send read receipt confirmation if the message is from someone else
+              if (message.message.sender_id !== currentUser) {
+                sendMessage(
+                  JSON.stringify({
+                    type: 'read_receipt_confirmation',
+                    message_id: message.message.id,
+                  }),
+                );
+              }
             } else {
               console.error(
                 'Message type is "message" but no "message" field found:',
@@ -81,29 +96,54 @@ const ChatWindow = ({ roomId }) => {
               );
             }
             break;
+
           case 'typing_indicator':
-            if (message.user_id) {
-              setTyping(message.user_id.user_id); 
-              console.log('setTyping for ', message.user_id.user_id);
-              setTimeout(() => setTyping(null), 5000); // Hide after 5 seconds
+            console.log('message in typing_indicator', message);
+            if (
+              message.message
+            ) {
+              setTyping(message.message); // Ensure message.user_id is a string
+              setTimeout(() => setTyping(null), 5000);
             } else {
               console.error(
-                'Typing indicator message missing user_id:',
+                'Typing indicator message missing or invalid user_id:',
                 message,
               );
             }
             break;
+
+          case 'message_received':
+            console.log(
+              `Received read receipt confirmation for Message ID ${message.message}`,
+            );
+            setMessages((prevMessages) => {
+              // Map through previous messages and update the relevant message
+              const updatedMessages = prevMessages.map((msg) =>
+                msg.id === message.message
+                  ? { ...msg, read_receipt: true }
+                  : msg,
+              );
+
+             
+
+              return updatedMessages;
+            });
+            break;
+
           default:
             console.error('Unknown message type:', message.type);
+            console.error('Unknown message :', message);
+            
+
         }
       } catch (error) {
         console.error('Error parsing WebSocket message:', error);
         setError('Error processing new message.');
       }
     }
-  }, [lastMessage]);
+  }, [lastMessage, sendMessage, currentUser]);
 
-  // Handle sending messages via WebSocket
+
   const handleSendMessage = (e) => {
     e.preventDefault();
     if (!messageInput.trim()) {
@@ -116,6 +156,7 @@ const ChatWindow = ({ roomId }) => {
         JSON.stringify({
           type: 'message',
           content: messageInput,
+          // You may not need to add `id` here; it's managed by the server
         }),
       );
       setMessageInput('');
@@ -126,15 +167,13 @@ const ChatWindow = ({ roomId }) => {
     }
   };
 
-  // Handle input change
   const handleInputChange = (e) => {
     setMessageInput(e.target.value);
-    // Notify the server that the user is typing
     if (e.target.value.trim() !== '') {
       sendMessage(
         JSON.stringify({
           type: 'typing_indicator',
-          user_id: currentUser, // Send user ID to identify who is typing
+          user_id: currentUser,
         }),
       );
     }
@@ -142,22 +181,19 @@ const ChatWindow = ({ roomId }) => {
 
   return (
     <div className="chat-window">
-      {/* Render loading spinner if loading */}
       {loading && (
         <div className="loading-spinner">
           <Spinner animation="border" />
         </div>
       )}
 
-      {/* Render error alert if there's an error */}
       {error && <Alert variant="danger">{error}</Alert>}
 
-      {/* Render messages */}
       <div className="messages">
         {messages.length > 0 ? (
-          messages.map((msg, index) => (
-            <div key={index} className={`message-bubble`}>
-              {msg && msg.sender_first_name ? (
+          messages.map((msg) => (
+            <div key={msg.id} className={`message-bubble`}>
+              {msg.sender_first_name ? (
                 <>
                   <div className="chat-header-details">
                     <img
@@ -172,14 +208,30 @@ const ChatWindow = ({ roomId }) => {
                   <div className="message-text">
                     {msg.content}
                     <span className="message-time">{msg.timestamp}</span>
+                    {msg.sender_id === currentUser && (
+                      <span
+                        className={`read_receipt ${
+                          msg.read_receipt ? 'read' : ''
+                        }`}
+                      >
+                        ✓✓
+                      </span>
+                    )}
                   </div>
                 </>
               ) : (
                 <div className="message-text">
-                  {msg ? msg.content : 'Message content not available'}
-                  <span className="message-time">
-                    {msg ? msg.timestamp : ''}
-                  </span>
+                  {msg.content}
+                  <span className="message-time">{msg.timestamp}</span>
+                  {msg.sender_id === currentUser && (
+                    <span
+                      className={`read_receipt ${
+                        msg.read_receipt ? 'read' : ''
+                      }`}
+                    >
+                      ✓
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -189,7 +241,7 @@ const ChatWindow = ({ roomId }) => {
         )}
       </div>
 
-      {/* Message input form */}
+
       <Form className="message-input" onSubmit={handleSendMessage}>
         <Form.Control
           type="text"
@@ -206,9 +258,8 @@ const ChatWindow = ({ roomId }) => {
         </Button>
       </Form>
 
-      {/* Display typing indicator if needed */}
       {typing && (
-        <div className="typing-indicator">User {typing} is typing...</div>
+       <div className="typing-indicator">User {typing} is typing...</div> // Ensure `typing` is a string or number
       )}
     </div>
   );

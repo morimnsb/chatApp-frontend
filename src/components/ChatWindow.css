@@ -160,3 +160,14 @@
   margin-top: 5px;
   text-align: right;
 }
+
+.read_receipt {
+  display: inline-block;
+  margin-left: 5px;
+  color: white; /* Default color for unread messages */
+  font-size: 1.2em;
+}
+
+.read_receipt.read {
+  color: blue; /* Color for read messages */
+}
