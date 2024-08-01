@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   ListGroup,
   InputGroup,
@@ -15,7 +15,7 @@ import {
 import './MessagesList.css';
 import Message from '../assets/images/message/message.png';
 import ChatWindow from './ChatWindow';
-import { jwtDecode } from 'jwt-decode';
+import {jwtDecode} from 'jwt-decode';
 import useChatWebSocket from './useChatWebSocket';
 import useFetch from './useFetch';
 import { ToastContainer, toast } from 'react-toastify';
@@ -25,24 +25,22 @@ const MessagesList = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
+  const [individualMessages, setIndividualMessages] = useState([]);
+  const [groupMessages, setGroupMessages] = useState([]);
   const accessToken = localStorage.getItem('access_token');
-  let decodedToken;
+  const currentUser = useMemo(() => {
+    try {
+      return jwtDecode(accessToken)?.user_id;
+    } catch (error) {
+      console.error('Error decoding access token:', error);
+      return null;
+    }
+  }, [accessToken]);
 
-  try {
-    decodedToken = jwtDecode(accessToken);
-  } catch (error) {
-    console.error('Error decoding access token:', error);
-  }
-
-  const currentUser = decodedToken?.user_id;
   const socketUrl = `ws://localhost:8000/ws/chat/?token=${accessToken}`;
 
-  useEffect(() => {
-    console.log('Attempting to connect to WebSocket with URL:', socketUrl);
-  }, [socketUrl]);
-
   const {
-    data: individualMessages,
+    data: fetchedIndividualMessages,
     loading: loadingIndividual,
     error: errorIndividual,
   } = useFetch('http://localhost:8000/chatMeetUp/Conversations/', {
@@ -50,7 +48,7 @@ const MessagesList = () => {
   });
 
   const {
-    data: groupMessages,
+    data: fetchedGroupMessages,
     loading: loadingGroup,
     error: errorGroup,
   } = useFetch('http://localhost:8000/chatMeetUp/chatrooms/');
@@ -60,6 +58,18 @@ const MessagesList = () => {
     loading: loadingUsers,
     error: errorUsers,
   } = useFetch('http://localhost:8000/api/auth/users');
+
+  useEffect(() => {
+    if (fetchedIndividualMessages) {
+      setIndividualMessages(fetchedIndividualMessages);
+    }
+  }, [fetchedIndividualMessages]);
+
+  useEffect(() => {
+    if (fetchedGroupMessages) {
+      setGroupMessages(fetchedGroupMessages);
+    }
+  }, [fetchedGroupMessages]);
 
   const handleNotification = useCallback((message) => {
     switch (message.type) {
@@ -71,7 +81,34 @@ const MessagesList = () => {
         break;
       case 'new_message_notification':
         toast.info(`New message from ${message.message.sender_first_name}.`);
-        
+
+        setIndividualMessages((prevMessages) => {
+          const existingConversation = prevMessages.find(
+            (conv) => conv.id === message.message.sender_id
+          );
+
+          if (existingConversation) {
+            return prevMessages.map((conv) =>
+              conv.id === message.message.sender_id
+                ? {
+                    ...conv,
+                    last_message: message.message,
+                    unread_count: (conv.unread_count || 0) + 1,
+                  }
+                : conv,
+            );
+          } else {
+            return [
+              ...prevMessages,
+              {
+                id: message.message.sender_id,
+                first_name: message.message.sender_first_name,
+                last_message: message.message,
+                unread_count: 1,
+              },
+            ];
+          }
+        });
         break;
       default:
         toast.info(`New message from ${message.message.sender_first_name}.`);
@@ -80,57 +117,80 @@ const MessagesList = () => {
 
   useChatWebSocket(socketUrl, handleNotification);
 
-  const handleGenerateRoomId = (receiverId) => {
+  const handleGenerateRoomId = useCallback((receiverId) => {
     try {
       const receiverIdStr = String(receiverId);
       const currentUserIdStr = String(currentUser);
-
       const { BigInt } = window;
-
       const bigintReceiver = BigInt(`0x${receiverIdStr.replace(/-/g, '')}`);
-      const bigintCurrentUser = BigInt(
-        `0x${currentUserIdStr.replace(/-/g, '')}`,
-      );
-
+      const bigintCurrentUser = BigInt(`0x${currentUserIdStr.replace(/-/g, '')}`);
       const xorResult = bigintReceiver ^ bigintCurrentUser;
-
       const xorResultHex = xorResult.toString(16);
-      const roomId = `${xorResultHex.substr(0, 8)}-${xorResultHex.substr(
-        8,
-        4,
-      )}-${xorResultHex.substr(12, 4)}-${xorResultHex.substr(
-        16,
-        4,
-      )}-${xorResultHex.substr(20)}`;
-
+      const roomId = `${xorResultHex.substr(0, 8)}-${xorResultHex.substr(8, 4)}-${xorResultHex.substr(12, 4)}-${xorResultHex.substr(16, 4)}-${xorResultHex.substr(20)}`;
       handleSelectChat(roomId);
     } catch (error) {
       console.error('Error generating room ID:', error);
     }
-  };
+  }, [currentUser]);
 
-  const handleSelectChat = (roomId) => {
+  const handleSelectChat = useCallback((roomId) => {
     setSelectedRoom(roomId);
-  };
+  }, []);
 
-  const handleUserSelect = (user) => {
+  const handleUserSelect = useCallback(
+  (user) => {
     setShowUserDropdown(false);
+
+    // Generate room ID for the selected user
     handleGenerateRoomId(user.id);
-  };
 
-  const filteredIndividualMessages = individualMessages?.filter((user) =>
-    user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+    // Update the individual messages list
+    setIndividualMessages((prevMessages) => {
+      // Check if the user is already in the list
+      const userExists = prevMessages.some((message) => message.id === user.id);
 
-  const filteredGroupMessages = groupMessages?.filter((room) =>
-    room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+      // If the user exists, update the unread_count
+      if (userExists) {
+        return prevMessages.map((message) =>
+          message.id === user.id
+            ? { ...message, unread_count: 0 } // Set unread_count to 0 for the selected user
+            : message
+        );
+      }
 
-  const totalFilteredMessages =
+      // If the user is not in the list, add them
+      return [
+        ...prevMessages,
+        {
+          id: user.id,
+          first_name: user.first_name,
+          last_message: null, // Initialize as per your requirement
+          unread_count: 0,   // Initialize unread_count to 0 for a new user
+          photo: user.photo, // Assuming photo is part of the user object
+          is_online: user.is_online || false, // Initialize is_online if it's part of the user object
+        },
+      ];
+    });
+  },
+  [handleGenerateRoomId]
+);
+
+
+
+  const filteredIndividualMessages = useMemo(() => individualMessages?.filter((user) =>
+    user.first_name?.toLowerCase().includes(searchQuery.toLowerCase())
+  ), [individualMessages, searchQuery]);
+
+  const filteredGroupMessages = useMemo(() => groupMessages?.filter((room) =>
+    room.name?.toLowerCase().includes(searchQuery.toLowerCase())
+  ), [groupMessages, searchQuery]);
+
+  const totalFilteredMessages = useMemo(() => 
     (filteredIndividualMessages?.length || 0) +
-    (filteredGroupMessages?.length || 0);
+    (filteredGroupMessages?.length || 0),
+  [filteredIndividualMessages, filteredGroupMessages]);
 
-  const filteredUsers = users?.filter((user) => user.id !== currentUser);
+  const filteredUsers = useMemo(() => users?.filter((user) => user.id !== currentUser), [users, currentUser]);
 
   return (
     <Container fluid className="messages-container">
@@ -276,8 +336,6 @@ const MessagesList = () => {
           )}
         </Modal.Body>
       </Modal>
-
-      {/* ToastContainer for displaying notifications */}
       <ToastContainer />
     </Container>
   );
