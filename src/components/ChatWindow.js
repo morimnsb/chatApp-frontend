@@ -154,7 +154,7 @@ const ChatWindow = ({ roomId }) => {
     try {
       sendMessage(
         JSON.stringify({
-          type: 'message',
+          type: 'chat_message',
           content: messageInput,
           // You may not need to add `id` here; it's managed by the server
         }),
