@@ -1,5 +1,5 @@
 import React from 'react';
-import { Modal, ListGroup, Spinner, Alert } from 'react-bootstrap';
+import { Modal, ListGroup, Spinner, Alert, Button } from 'react-bootstrap';
 
 const UserModal = ({
   showUserDropdown,
@@ -8,6 +8,7 @@ const UserModal = ({
   errorUsers,
   filteredUsers,
   handleUserSelect,
+  handleFriendshipRequest, // Receive this prop
 }) => (
   <Modal show={showUserDropdown} onHide={() => setShowUserDropdown(false)}>
     <Modal.Header closeButton>
@@ -34,6 +35,16 @@ const UserModal = ({
                 className="profile-img"
               />
               {user.first_name}
+              <Button
+                variant="primary"
+                className="float-end"
+                onClick={(e) => {
+                  e.stopPropagation(); // Prevent triggering handleUserSelect
+                  handleFriendshipRequest(user.id);
+                }}
+              >
+                Add Friend
+              </Button>
             </ListGroup.Item>
           ))}
         </ListGroup>

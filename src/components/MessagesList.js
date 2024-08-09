@@ -15,7 +15,7 @@ import {
 import './MessagesList.css';
 import Message from '../assets/images/message/message.png';
 import ChatWindow from './ChatWindow';
-import {jwtDecode} from 'jwt-decode';
+import { jwtDecode } from 'jwt-decode';
 import useChatWebSocket from './useChatWebSocket';
 import useFetch from './useFetch';
 import { ToastContainer, toast } from 'react-toastify';
@@ -72,7 +72,7 @@ const MessagesList = () => {
   }, [fetchedIndividualMessages, fetchedGroupMessages]);
 
   const handleNotification = useCallback((message) => {
-    console.log(message)
+    console.log(message);
     switch (message.type) {
       case 'status_notify':
         toast.info(
@@ -82,11 +82,9 @@ const MessagesList = () => {
 
       case 'new_message_notification':
         toast.info(`New message from ${message.message.sender_first_name}.`);
-        // updateUnreadCount(message.message.sender_id);
-        
         setIndividualMessages((prevMessages) => {
           const existingConversation = prevMessages.find(
-            (conv) => conv.id === message.message.sender_id
+            (conv) => conv.id === message.message.sender_id,
           );
 
           if (existingConversation) {
@@ -117,16 +115,6 @@ const MessagesList = () => {
     }
   }, []);
 
-  // const updateUnreadCount = (senderId) => {
-  //   setIndividualMessages((prevMessages) =>
-  //     prevMessages.map((user) =>
-  //       user.id === senderId
-  //         ? { ...user, unread_count: (user.unread_count || 0) + 1 }
-  //         : user,
-  //     ),
-  //   );
-  // };
-
   useChatWebSocket(socketUrl, handleNotification);
 
   const handleGenerateRoomId = useCallback(
@@ -136,15 +124,25 @@ const MessagesList = () => {
         const currentUserIdStr = String(currentUser);
         const { BigInt } = window;
         const bigintReceiver = BigInt(`0x${receiverIdStr.replace(/-/g, '')}`);
-      const bigintCurrentUser = BigInt(`0x${currentUserIdStr.replace(/-/g, '')}`);
+        const bigintCurrentUser = BigInt(
+          `0x${currentUserIdStr.replace(/-/g, '')}`,
+        );
         const xorResult = bigintReceiver ^ bigintCurrentUser;
         const xorResultHex = xorResult.toString(16);
-      const roomId = `${xorResultHex.substr(0, 8)}-${xorResultHex.substr(8, 4)}-${xorResultHex.substr(12, 4)}-${xorResultHex.substr(16, 4)}-${xorResultHex.substr(20)}`;
+        const roomId = `${xorResultHex.substr(0, 8)}-${xorResultHex.substr(
+          8,
+          4,
+        )}-${xorResultHex.substr(12, 4)}-${xorResultHex.substr(
+          16,
+          4,
+        )}-${xorResultHex.substr(20)}`;
         handleSelectChat(roomId);
       } catch (error) {
         console.error('Error generating room ID:', error);
       }
-  }, [currentUser]);
+    },
+    [currentUser],
+  );
 
   const handleSelectChat = useCallback((roomId) => {
     setSelectedRoom(roomId);
@@ -153,57 +151,85 @@ const MessagesList = () => {
   const handleUserSelect = useCallback(
     (user) => {
       setShowUserDropdown(false);
-
-      // Generate room ID for the selected user
       handleGenerateRoomId(user.id);
-
-      // Update the individual messages list
       setIndividualMessages((prevMessages) => {
-        // Check if the user is already in the list
-      const userExists = prevMessages.some((message) => message.id === user.id);
-
-        // If the user exists, update the unread_count
+        const userExists = prevMessages.some(
+          (message) => message.id === user.id,
+        );
         if (userExists) {
           return prevMessages.map((message) =>
-            message.id === user.id
-              ? { ...message, unread_count: 0 } // Set unread_count to 0 for the selected user
-            : message
+            message.id === user.id ? { ...message, unread_count: 0 } : message,
           );
         }
-
-        // If the user is not in the list, add them
         return [
           ...prevMessages,
           {
             id: user.id,
             first_name: user.first_name,
-            last_message: null, // Initialize as per your requirement
-          unread_count: 0,   // Initialize unread_count to 0 for a new user
-            photo: user.photo, // Assuming photo is part of the user object
-            is_online: user.is_online || false, // Initialize is_online if it's part of the user object
+            last_message: null,
+            unread_count: 0,
+            photo: user.photo,
+            is_online: user.is_online || false,
           },
         ];
       });
     },
-  [handleGenerateRoomId]
+    [handleGenerateRoomId],
   );
 
+  const handleFriendshipRequest = async (userId) => {
+    try {
+      const response = await fetch('http://localhost:8000/chatMeetUp/friendship/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ to_user_id: userId }),
+      });
 
+      if (!response.ok) {
+        throw new Error('Failed to send friendship request.');
+      }
 
-  const filteredIndividualMessages = useMemo(() => individualMessages?.filter((user) =>
-    user.first_name?.toLowerCase().includes(searchQuery.toLowerCase())
-  ), [individualMessages, searchQuery]);
+      const result = await response.json();
+      toast.success('Friendship request sent successfully!');
+      console.log(result); // Handle the response as needed
+    } catch (error) {
+      toast.error(
+        error.message || 'An error occurred while sending the request.',
+      );
+      console.error('Friendship request error:', error);
+    }
+  };
 
-  const filteredGroupMessages = useMemo(() => groupMessages?.filter((room) =>
-    room.name?.toLowerCase().includes(searchQuery.toLowerCase())
-  ), [groupMessages, searchQuery]);
+  const filteredIndividualMessages = useMemo(
+    () =>
+      individualMessages?.filter((user) =>
+        user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
+      ),
+    [individualMessages, searchQuery],
+  );
 
-  const totalFilteredMessages = useMemo(() => 
+  const filteredGroupMessages = useMemo(
+    () =>
+      groupMessages?.filter((room) =>
+        room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
+      ),
+    [groupMessages, searchQuery],
+  );
+
+  const totalFilteredMessages = useMemo(
+    () =>
       (filteredIndividualMessages?.length || 0) +
       (filteredGroupMessages?.length || 0),
-  [filteredIndividualMessages, filteredGroupMessages]);
+    [filteredIndividualMessages, filteredGroupMessages],
+  );
 
-  const filteredUsers = useMemo(() => users?.filter((user) => user.id !== currentUser), [users, currentUser]);
+  const filteredUsers = useMemo(
+    () => users?.filter((user) => user.id !== currentUser),
+    [users, currentUser],
+  );
 
   return (
     <Container fluid className="messages-container">
@@ -252,7 +278,9 @@ const MessagesList = () => {
         errorUsers={errorUsers}
         filteredUsers={filteredUsers}
         handleUserSelect={handleUserSelect}
+        handleFriendshipRequest={handleFriendshipRequest} // Ensure this is passed
       />
+
       <ToastContainer />
     </Container>
   );
