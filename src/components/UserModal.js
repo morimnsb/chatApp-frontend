@@ -26,18 +26,21 @@ const UserModal = ({
           {filteredUsers.map((user) => (
             <ListGroup.Item
               key={user.id}
-              action
+              action={false} // Disable the action prop to prevent it from being a button
+              as="div" // Render as a div to avoid button nesting issues
               onClick={() => handleUserSelect(user)}
+              className="d-flex justify-content-between align-items-center"
             >
-              <img
-                src={user.photo}
-                alt={user.first_name}
-                className="profile-img"
-              />
-              {user.first_name}
+              <div className="d-flex align-items-center">
+                <img
+                  src={user.photo}
+                  alt={user.first_name}
+                  className="profile-img me-2"
+                />
+                {user.first_name}
+              </div>
               <Button
                 variant="primary"
-                className="float-end"
                 onClick={(e) => {
                   e.stopPropagation(); // Prevent triggering handleUserSelect
                   handleFriendshipRequest(user.id);

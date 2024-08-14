@@ -13,7 +13,6 @@ import {
   Col,
 } from 'react-bootstrap';
 import './MessagesList.css';
-import Message from '../assets/images/message/message.png';
 import ChatWindow from './ChatWindow';
 import { jwtDecode } from 'jwt-decode';
 import useChatWebSocket from './useChatWebSocket';
@@ -30,6 +29,7 @@ const MessagesList = () => {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [individualMessages, setIndividualMessages] = useState([]);
   const [groupMessages, setGroupMessages] = useState([]);
+
   const accessToken = localStorage.getItem('access_token');
   const currentUser = useMemo(() => {
     try {
@@ -63,16 +63,25 @@ const MessagesList = () => {
   } = useFetch('http://localhost:8000/api/auth/users');
 
   useEffect(() => {
-    if (fetchedIndividualMessages) {
-      setIndividualMessages(fetchedIndividualMessages);
+    if (
+      fetchedIndividualMessages?.partners &&
+      Array.isArray(fetchedIndividualMessages.partners)
+    ) {
+      setIndividualMessages(fetchedIndividualMessages.partners);
+      console.log(
+        'Fetched individual messages:',
+        fetchedIndividualMessages.partners,
+      ); // Log fetched messages
     }
-    if (fetchedGroupMessages) {
+
+    if (Array.isArray(fetchedGroupMessages)) {
       setGroupMessages(fetchedGroupMessages);
+      console.log('Fetched group messages:', fetchedGroupMessages); // Log fetched group messages
     }
   }, [fetchedIndividualMessages, fetchedGroupMessages]);
 
+
   const handleNotification = useCallback((message) => {
-    console.log(message);
     switch (message.type) {
       case 'status_notify':
         toast.info(
@@ -110,6 +119,7 @@ const MessagesList = () => {
           }
         });
         break;
+
       default:
         toast.info(`New message from ${message.message.sender_first_name}.`);
     }
@@ -179,50 +189,58 @@ const MessagesList = () => {
 
   const handleFriendshipRequest = async (userId) => {
     try {
-      const response = await fetch('http://localhost:8000/chatMeetUp/friendship/', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
+      const response = await fetch(
+        'http://localhost:8000/chatMeetUp/friendship/',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ to_user_id: userId }), // Ensure this matches the backend expectation
         },
-        body: JSON.stringify({ to_user_id: userId }),
-      });
+      );
 
       if (!response.ok) {
-        throw new Error('Failed to send friendship request.');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Friendship request failed');
       }
 
       const result = await response.json();
-      toast.success('Friendship request sent successfully!');
-      console.log(result); // Handle the response as needed
+      toast.success(result.message || 'Friendship request sent successfully!');
+      console.log(result.message);
     } catch (error) {
+      console.error('Friendship request error:', error);
       toast.error(
         error.message || 'An error occurred while sending the request.',
       );
-      console.error('Friendship request error:', error);
     }
   };
 
   const filteredIndividualMessages = useMemo(
     () =>
-      individualMessages?.filter((user) =>
-        user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
-      ),
+      Array.isArray(individualMessages)
+        ? individualMessages.filter((user) =>
+            user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
+          )
+        : [],
     [individualMessages, searchQuery],
   );
 
   const filteredGroupMessages = useMemo(
     () =>
-      groupMessages?.filter((room) =>
-        room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
-      ),
+      Array.isArray(groupMessages)
+        ? groupMessages.filter((room) =>
+            room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
+          )
+        : [],
     [groupMessages, searchQuery],
   );
 
   const totalFilteredMessages = useMemo(
     () =>
-      (filteredIndividualMessages?.length || 0) +
-      (filteredGroupMessages?.length || 0),
+      (filteredIndividualMessages.length || 0) +
+      (filteredGroupMessages.length || 0),
     [filteredIndividualMessages, filteredGroupMessages],
   );
 

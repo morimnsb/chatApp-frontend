@@ -99,10 +99,8 @@ const ChatWindow = ({ roomId }) => {
 
           case 'typing_indicator':
             console.log('message in typing_indicator', message);
-            if (
-              message.message
-            ) {
-              setTyping(message.message); // Ensure message.user_id is a string
+            if (message.user_id) {
+              setTyping(message.user_id); // Ensure message.user_id is a string
               setTimeout(() => setTyping(null), 5000);
             } else {
               console.error(
