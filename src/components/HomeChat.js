@@ -69,31 +69,48 @@ const HomeChat = () => {
 
   const handleNotification = useCallback((message) => {
     const { type, message: msg } = message;
-    if (type === 'status_notify') {
-      toast.info(`User ${msg.user_first_name} is now ${msg.status}.`);
-    } else if (type === 'new_message_notification') {
-      toast.info(`New message from ${msg.sender_first_name}.`);
-      setIndividualMessages((prevMessages) => {
-        const existingConversation = prevMessages.find((conv) => conv.id === msg.sender_id);
+    
+    switch (type) {
+      case 'status_notify':
+        toast.info(`User ${msg.user_first_name} is now ${msg.status}.`);
+        break;
 
-        if (existingConversation) {
-          return prevMessages.map((conv) =>
-            conv.id === msg.sender_id
-              ? { ...conv, last_message: msg, unread_count: (conv.unread_count || 0) + 1 }
-              : conv,
+      case 'new_message_notification':
+        toast.info(`New message from ${msg.sender_first_name}.`);
+        setIndividualMessages((prevMessages) => {
+          const existingConversation = prevMessages.find(
+            (conv) => conv.id === msg.sender_id,
           );
-        } else {
-          return [
-            ...prevMessages,
-            {
-              id: msg.sender_id,
-              first_name: msg.sender_first_name,
-              last_message: msg,
-              unread_count: 1,
-            },
-          ];
-        }
-      });
+
+          if (existingConversation) {
+            return prevMessages.map((conv) =>
+              conv.id === msg.sender_id
+                ? {
+                    ...conv,
+                    last_message: msg,
+                    unread_count: (conv.unread_count || 0) + 1,
+                  }
+                : conv,
+            );
+          } else {
+            return [
+              ...prevMessages,
+              {
+                id: msg.sender_id,
+                first_name: msg.sender_first_name,
+                last_message: msg,
+                unread_count: 1,
+              },
+            ];
+          }
+        });
+
+        break;
+      case 'typing_indicator':
+        toast.info(`User ${msg} is typing.`);
+        break;
+      default:
+        console.error('Unknown message type:', message.type);
     }
   }, []);
 

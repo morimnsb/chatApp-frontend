@@ -21,6 +21,7 @@ const useChatWebSocket = (socketUrl, handleNotification) => {
 
   useEffect(() => {
     if (lastJsonMessage !== null) {
+      console.log("lastJsonMessage", lastJsonMessage)
       handleMessage(lastJsonMessage);
     }
   }, [lastJsonMessage, handleMessage]);

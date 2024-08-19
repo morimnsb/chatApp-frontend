@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Form, Button, Spinner, Alert } from 'react-bootstrap';
-import useWebSocket from 'react-use-websocket';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import useFetch from './useFetch';
 import './ChatWindow.css';
 import {jwtDecode} from 'jwt-decode';
+import useChatWebSocket from './useChatWebSocket';
 
 const ChatWindow = ({ roomId }) => {
   const [messages, setMessages] = useState([]);
@@ -32,13 +32,6 @@ const ChatWindow = ({ roomId }) => {
     fetchConfig,
   );
 
-  const { sendMessage, lastMessage, readyState } = useWebSocket(socketUrl, {
-    onOpen: () => console.log('WebSocket connection established'),
-    onClose: () => console.log('WebSocket connection closed'),
-    onError: (error) => setError(`WebSocket error: ${error.message}`),
-    shouldReconnect: () => true,
-  });
-
   const currentUser = useMemo(() => {
     try {
       return jwtDecode(accessToken)?.user_id || null;
@@ -49,63 +42,59 @@ const ChatWindow = ({ roomId }) => {
     }
   }, [accessToken]);
 
-  useEffect(() => {
-    if (lastMessage) {
-      const handleMessage = (message) => {
-        switch (message.type) {
-          case 'message':
-            if (message.message) {
-              setMessages((prevMessages) => {
-                if (
-                  !prevMessages.some((msg) => msg.id === message.message.id)
-                ) {
-                  return [...prevMessages, message.message];
-                }
-                return prevMessages;
-              });
+  const handleNotification = useCallback(
+    (message) => {
 
-              if (message.message.sender_id !== currentUser) {
-                sendMessage(
-                  JSON.stringify({
-                    type: 'read_receipt_confirmation',
-                    message_id: message.message.id,
-                  }),
-                );
+      switch (message.type) {
+        case 'message':
+          if (message.message) {
+            setMessages((prevMessages) => {
+              if (!prevMessages.some((msg) => msg.id === message.message.id)) {
+                return [...prevMessages, message.message];
               }
+              return prevMessages;
+            });
+
+            if (message.message.sender_id !== currentUser) {
+              sendJsonMessage({
+                type: 'read_receipt_confirmation',
+                message_id: message.message.id,
+              });
             }
-            break;
+          }
+          break;
 
-          case 'typing_indicator':
-            if (message.user_id) {
-              setTyping(message.user_id);
-              setTimeout(() => setTyping(null), 5000);
-            }
-            break;
+        case 'typing_indicator':
+          if (message.user_id) {
+            console.log(message.user_id," is typing")
+            setTyping(message.user_id);
+            setTimeout(() => setTyping(null), 5000);
+          }
+          break;
 
-          case 'message_received':
-            setMessages((prevMessages) =>
-              prevMessages.map((msg) =>
-                msg.id === message.message
-                  ? { ...msg, read_receipt: true }
-                  : msg,
-              ),
-            );
-            break;
+        case 'message_received':
+          setMessages((prevMessages) =>
+            prevMessages.map((msg) =>
+              msg.id === message.message ? { ...msg, read_receipt: true } : msg,
+            ),
+          );
+          break;
 
-          default:
-            console.error('Unknown message type:', message.type);
-        }
-      };
+        default:
+          console.error('Unknown message type:', message.type);
 
-      try {
-        const message = JSON.parse(lastMessage.data);
-        handleMessage(message);
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
-        setError('Error processing new message.');
+       
       }
-    }
-  }, [lastMessage, currentUser, sendMessage]);
+    },
+    [ currentUser],
+  );
+
+  // Initialize WebSocket connection and functions
+  const { sendJsonMessage, readyState, } = useChatWebSocket(
+    socketUrl,
+    handleNotification,
+  );
+  
 
   useEffect(() => {
     if (fetchedMessages) {
@@ -129,11 +118,11 @@ const ChatWindow = ({ roomId }) => {
       }
 
       try {
-        sendMessage(
-          JSON.stringify({
+        sendJsonMessage(
+          {
             type: 'chat_message',
             content: messageInput,
-          }),
+          },
         );
         setMessageInput('');
         setError(null);
@@ -142,22 +131,22 @@ const ChatWindow = ({ roomId }) => {
         setError('Error sending message. Please try again.');
       }
     },
-    [messageInput, sendMessage],
+    [messageInput, sendJsonMessage],
   );
 
   const handleInputChange = useCallback(
     (e) => {
       setMessageInput(e.target.value);
       if (e.target.value.trim() !== '') {
-        sendMessage(
-          JSON.stringify({
+        sendJsonMessage(
+          {
             type: 'typing_indicator',
             user_id: currentUser,
-          }),
+          },
         );
       }
     },
-    [sendMessage, currentUser],
+    [sendJsonMessage, currentUser],
   );
 
   const formatTime = useCallback((timestamp) => {
