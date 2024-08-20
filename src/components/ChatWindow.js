@@ -141,7 +141,7 @@ const ChatWindow = ({ roomId }) => {
         sendJsonMessage(
           {
             type: 'typing_indicator',
-            user_id: currentUser,
+            sender_id: currentUser,
           },
         );
       }
