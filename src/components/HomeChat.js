@@ -17,7 +17,7 @@ const HomeChat = () => {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [individualMessages, setIndividualMessages] = useState([]);
   const [groupMessages, setGroupMessages] = useState([]);
-
+  
   const accessToken = localStorage.getItem('access_token');
 
   const currentUser = useMemo(() => {
@@ -107,8 +107,65 @@ const HomeChat = () => {
 
         break;
       case 'typing_indicator':
-        toast.info(`User ${msg} is typing.`);
+        toast.info(`User ${msg.user_id} is typing.`);
+
+        setIndividualMessages((prevMessages) => {
+          const existingConversation = prevMessages.find(
+            (conv) => conv.id === msg.user_id,
+          );
+
+          if (existingConversation) {
+            const originalContent = existingConversation.last_message.content;
+            return prevMessages.map((conv) =>
+              conv.id === msg.user_id
+                ? {
+                    ...conv,
+                    last_message: {
+                      ...conv.last_message,
+                      content: 'Typing...',
+                      originalContent, // Save the original content
+                    },
+                    unread_count: conv.unread_count,
+                  }
+                : conv,
+            );
+          } else {
+            return [
+              ...prevMessages,
+              {
+                id: msg.user_id,
+                first_name: msg.user_first_name,
+                last_message: {
+                  content: 'Typing...',
+                  originalContent: '', // For a new conversation, there's no previous content
+                  timestamp: Date.now(),
+                },
+                unread_count: 1,
+              },
+            ];
+          }
+        });
+
+        // Restore the original content after 5 seconds
+        setTimeout(() => {
+          setIndividualMessages((prevMessages) => {
+            return prevMessages.map((conv) =>
+              conv.id === msg.user_id
+                ? {
+                    ...conv,
+                    last_message: {
+                      ...conv.last_message,
+                      content:
+                        conv.last_message.originalContent ||
+                        conv.last_message.content,
+                    },
+                  }
+                : conv,
+            );
+          });
+        }, 5000);
         break;
+
       default:
         console.error('Unknown message type:', message.type);
     }
