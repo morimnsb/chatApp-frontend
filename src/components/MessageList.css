@@ -1,0 +1,70 @@
+.message-row {
+  display: flex;
+  align-items: center;
+}
+
+.message-content {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-right: 10px; /* Space between image and text */
+}
+
+.profile-img {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+
+.online-status {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  background-color: green;
+  border-radius: 50%;
+  border: 2px solid white; /* Optional: adds a white border to separate the status circle from the image */
+}
+
+.message-body {
+  flex-grow: 1; /* Takes up remaining space */
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.user-name, .room-name {
+  font-weight: bold;
+}
+
+.time-text {
+  font-size: 0.85rem;
+  color: #888;
+  white-space: nowrap;
+}
+
+.message-details {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 5px;
+}
+
+.subtext {
+  color: #666;
+  font-size: 0.85rem;
+  flex-grow: 1;
+}
+
+.unread_count {
+  background-color: red;
+  color: white;
+  border-radius: 12px;
+  padding: 2px 6px;
+  font-size: 0.75rem;
+  margin-left: 10px;
+}

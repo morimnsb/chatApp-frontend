@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Form, Button, Spinner, Alert } from 'react-bootstrap';
-import { formatDistanceToNow, parseISO } from 'date-fns';
+import { format, parseISO, isToday, isYesterday } from 'date-fns';
 import useFetch from './useFetch';
 import './ChatWindow.css';
-import {jwtDecode} from 'jwt-decode';
+import { jwtDecode } from 'jwt-decode';
 import useChatWebSocket from './useChatWebSocket';
 
 const ChatWindow = ({ roomId }) => {
@@ -13,7 +13,6 @@ const ChatWindow = ({ roomId }) => {
   const [typing, setTyping] = useState(null);
 
   const accessToken = localStorage.getItem('access_token');
-
   const socketUrl = `ws://localhost:8000/ws/chat/${roomId}/?token=${accessToken}`;
 
   const fetchConfig = useMemo(
@@ -27,10 +26,7 @@ const ChatWindow = ({ roomId }) => {
     data: fetchedMessages,
     loading,
     error: fetchError,
-  } = useFetch(
-    `http://localhost:8000/chatMeetUp/messages/${roomId}/`,
-    fetchConfig,
-  );
+  } = useFetch(`http://localhost:8000/chatMeetUp/messages/${roomId}/`, fetchConfig);
 
   const currentUser = useMemo(() => {
     try {
@@ -44,7 +40,6 @@ const ChatWindow = ({ roomId }) => {
 
   const handleNotification = useCallback(
     (message) => {
-
       switch (message.type) {
         case 'message':
           if (message.message) {
@@ -66,7 +61,6 @@ const ChatWindow = ({ roomId }) => {
 
         case 'typing_indicator':
           if (message.user_id) {
-            console.log(message.user_id," is typing")
             setTyping(message.user_id);
             setTimeout(() => setTyping(null), 5000);
           }
@@ -82,19 +76,12 @@ const ChatWindow = ({ roomId }) => {
 
         default:
           console.error('Unknown message type:', message.type);
-
-       
       }
     },
     [ currentUser],
   );
 
-  // Initialize WebSocket connection and functions
-  const { sendJsonMessage, readyState, } = useChatWebSocket(
-    socketUrl,
-    handleNotification,
-  );
-  
+  const { sendJsonMessage, readyState } = useChatWebSocket(socketUrl, handleNotification);
 
   useEffect(() => {
     if (fetchedMessages) {
@@ -118,12 +105,7 @@ const ChatWindow = ({ roomId }) => {
       }
 
       try {
-        sendJsonMessage(
-          {
-            type: 'chat_message',
-            content: messageInput,
-          },
-        );
+        sendJsonMessage({ type: 'chat_message', content: messageInput });
         setMessageInput('');
         setError(null);
       } catch (error) {
@@ -138,12 +120,7 @@ const ChatWindow = ({ roomId }) => {
     (e) => {
       setMessageInput(e.target.value);
       if (e.target.value.trim() !== '') {
-        sendJsonMessage(
-          {
-            type: 'typing_indicator',
-            sender_id: currentUser,
-          },
-        );
+        sendJsonMessage({ type: 'typing_indicator', sender_id: currentUser });
       }
     },
     [sendJsonMessage, currentUser],
@@ -152,7 +129,13 @@ const ChatWindow = ({ roomId }) => {
   const formatTime = useCallback((timestamp) => {
     try {
       const date = parseISO(timestamp);
-      return formatDistanceToNow(date, { addSuffix: true });
+      if (isToday(date)) {
+        return format(date, 'hh:mm a');
+      } else if (isYesterday(date)) {
+        return `Yesterday at ${format(date, 'hh:mm a')}`;
+      } else {
+        return format(date, 'MMM d, yyyy, hh:mm a');
+      }
     } catch (error) {
       console.error('Error formatting time:', error);
       return timestamp;
