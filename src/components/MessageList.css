@@ -1,8 +1,39 @@
+/* Variables */
+:root {
+  --primary-color: #007bff;
+  --secondary-color: #6c757d;
+  --text-color: #343a40;
+  --muted-text-color: #6c757d;
+  --background-color: #ffffff;
+  --hover-background-color: #f8f9fa;
+  --active-background-color: #e9ecef;
+  --online-color: #28a745;
+  --unread-badge-bg: #dc3545;
+  --font-small: 0.85rem;
+  --font-extra-small: 0.75rem;
+  --border-radius: 50%;
+  --spacing-sm: 5px;
+  --spacing-md: 10px;
+}
+
+/* Message Row */
 .message-row {
   display: flex;
   align-items: center;
+  padding: var(--spacing-md);
+  transition: background-color 0.2s ease;
 }
 
+.message-list-item:hover {
+  background-color: var(--hover-background-color);
+  cursor: pointer;
+}
+
+.message-list-item.active {
+  background-color: var(--active-background-color);
+}
+
+/* Profile Image and Online Status */
 .message-content {
   position: relative;
   display: flex;
@@ -14,21 +45,27 @@
   width: 40px;
   height: 40px;
   border-radius: 50%;
+  object-fit: cover; /* Ensure the image covers the entire area */
 }
 
 .online-status {
   position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 10px;
+  bottom: 0;  /* Adjust this to position the circle exactly where you want */
+  right: 0;   /* Adjust this to position the circle exactly where you want */
+  width: 10px;  /* Adjust the size as needed */
   height: 10px;
   background-color: green;
   border-radius: 50%;
-  border: 2px solid white; /* Optional: adds a white border to separate the status circle from the image */
+  border: 2px solid white; /* Creates a small border around the status */
 }
 
+
+/* Message Body */
 .message-body {
-  flex-grow: 1; /* Takes up remaining space */
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .message-header {
@@ -37,13 +74,16 @@
   align-items: center;
 }
 
-.user-name, .room-name {
-  font-weight: bold;
+.user-name,
+.room-name {
+  font-weight: 600;
+  color: var(--text-color);
+  font-size: 1rem;
 }
 
 .time-text {
-  font-size: 0.85rem;
-  color: #888;
+  font-size: var(--font-small);
+  color: var(--muted-text-color);
   white-space: nowrap;
 }
 
@@ -51,20 +91,42 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-top: 5px;
+  margin-top: var(--spacing-sm);
 }
 
 .subtext {
-  color: #666;
-  font-size: 0.85rem;
-  flex-grow: 1;
+  color: var(--muted-text-color);
+  font-size: var(--font-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: var(--spacing-md);
 }
 
 .unread_count {
-  background-color: red;
-  color: white;
+  background-color: var(--unread-badge-bg);
+  color: var(--background-color);
   border-radius: 12px;
-  padding: 2px 6px;
-  font-size: 0.75rem;
-  margin-left: 10px;
+  padding: 2px 8px;
+  font-size: var(--font-extra-small);
+  min-width: 20px;
+  text-align: center;
+}
+
+/* Responsive Design */
+@media (max-width: 576px) {
+  .profile-img {
+    width: 35px;
+    height: 35px;
+  }
+
+  .user-name,
+  .room-name {
+    font-size: 0.9rem;
+  }
+
+  .time-text,
+  .subtext {
+    font-size: 0.75rem;
+  }
 }

@@ -2,6 +2,7 @@ import React from 'react';
 import { ListGroup } from 'react-bootstrap';
 import { format, parseISO, isToday, isYesterday } from 'date-fns';
 import profilephoto1 from '../assets/images/message/profilephoto1.png';
+import './MessageList.css'; // Import the CSS file
 
 const MessageList = ({
   filteredIndividualMessages,
@@ -12,7 +13,7 @@ const MessageList = ({
 }) => {
   const formatTimestamp = (timestamp) => {
     if (!timestamp) {
-      return ''; // Return an empty string or a placeholder if the timestamp is missing
+      return '';
     }
 
     try {
@@ -26,7 +27,7 @@ const MessageList = ({
       }
     } catch (error) {
       console.error('Error formatting timestamp:', error);
-      return 'Invalid date'; // Fallback message for invalid dates
+      return 'Invalid date';
     }
   };
 
@@ -51,14 +52,14 @@ const MessageList = ({
                 className="profile-img"
               />
               {user.is_online && <span className="online-status"></span>}
-              {user.is_online && <span className="online-">online</span>}
-
             </div>
 
             <div className="message-body">
               <div className="message-header">
                 <span className="user-name">{user.first_name}</span>
-                <span className="time-text">{formatTimestamp(user.last_message?.timestamp)}</span>
+                <span className="time-text">
+                  {formatTimestamp(user.last_message?.timestamp)}
+                </span>
               </div>
               <div className="message-details">
                 <span className="subtext">{user.last_message?.content}</span>
@@ -91,7 +92,9 @@ const MessageList = ({
             <div className="message-body">
               <div className="message-header">
                 <span className="room-name">{room.name}</span>
-                <span className="time-text">{formatTimestamp(room.last_message?.timestamp)}</span>
+                <span className="time-text">
+                  {formatTimestamp(room.last_message?.timestamp)}
+                </span>
               </div>
               <div className="message-details">
                 <span className="subtext">{room.last_message?.content}</span>
