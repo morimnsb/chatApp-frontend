@@ -21,7 +21,7 @@ const useGenerateRoomId = (currentUser, handleSelectChat) => {
           16,
           4,
         )}-${xorResultHex.substr(20)}`;
-        handleSelectChat(roomId);
+        handleSelectChat(roomId, receiverIdStr);
       } catch (error) {
         console.error('Error generating room ID:', error);
       }

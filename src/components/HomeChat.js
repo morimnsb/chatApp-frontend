@@ -1,7 +1,7 @@
 import React, { useState, useReducer, useCallback, useMemo, useEffect } from 'react';
-import { messageReducer, messageActionTypes } from './messageReducer'; // Adjust path as needed
+import { messageReducer, messageActionTypes } from './messageReducer';
 import { Container, Row, Col, Spinner, Alert } from 'react-bootstrap';
-import { jwtDecode } from 'jwt-decode'; // Corrected import
+import {jwtDecode} from 'jwt-decode'; // Ensure the correct import path
 import useChatWebSocket from './useChatWebSocket';
 import useFetch from './useFetch';
 import MessageList from './MessageList';
@@ -13,13 +13,13 @@ import 'react-toastify/dist/ReactToastify.css';
 import './HomeChat.css';
 
 const initialState = {
-  individualMessages: [], // Ensure this matches what your reducer expects
-  // other state properties if needed
+  individualMessages: [], // Initial state for messages
+  // Add other initial state properties if needed
 };
 
 const HomeChat = () => {
   const [state, dispatch] = useReducer(messageReducer, initialState);
-  const { individualMessages } = state; // Access state from reducer
+  const { individualMessages } = state;
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRoom, setSelectedRoom] = useState(null);
@@ -75,7 +75,7 @@ const HomeChat = () => {
     if (Array.isArray(individualMessages)) {
       console.log('Filtering individual messages...');
       return individualMessages.filter((user) =>
-        user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
+          user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
       );
     } else {
       console.warn(
@@ -90,7 +90,7 @@ const HomeChat = () => {
     if (Array.isArray(fetchedGroupMessages)) {
       console.log('Filtering group messages...');
       return fetchedGroupMessages.filter((room) =>
-        room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
+          room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
       );
     } else {
       console.warn(
@@ -112,7 +112,6 @@ const HomeChat = () => {
           type: messageActionTypes.UPDATE_MESSAGES,
           payload: { msg, isStatus: true },
         });
-        console.log("msg",msg)
         break;
       case 'new_message_notification':
         toast.info(`New message from ${msg.sender_first_name}.`);
@@ -142,15 +141,20 @@ const HomeChat = () => {
   useChatWebSocket(
     `ws://localhost:8000/ws/chat/?token=${accessToken}`,
     handleNotification,
-    true,
+    !!accessToken // Ensure WebSocket only connects if there's a valid token
   );
 
   const handleSelectChat = useCallback(
-    (roomId) => {
+    (roomId, receiverId) => {
       setSelectedRoom(roomId);
+      dispatch({
+        type: messageActionTypes.CLEAR_UNREAD_COUNT, // Ensure this action is handled in your reducer
+        payload: receiverId,
+      });
     },
-    [setSelectedRoom],
+    [setSelectedRoom, dispatch],
   );
+
   const handleFriendshipRequest = async (userId) => {
     try {
       const response = await fetch(
@@ -177,7 +181,6 @@ const HomeChat = () => {
       toast.error(`Error: ${error.message || 'An error occurred.'}`);
     }
   };
-
 
   const retryFetch = useCallback(() => {
     retryIndividual();

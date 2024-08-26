@@ -2,6 +2,7 @@ export const messageActionTypes = {
   SET_INDIVIDUAL_MESSAGES: 'SET_INDIVIDUAL_MESSAGES',
   UPDATE_MESSAGES: 'UPDATE_MESSAGES',
   RESET_TYPING_INDICATOR: 'RESET_TYPING_INDICATOR',
+  CLEAR_UNREAD_COUNT: 'CLEAR_UNREAD_COUNT', // Added new action type
 };
 
 const debug = (label, data) => {
@@ -31,7 +32,6 @@ export const messageReducer = (state, action) => {
       console.log('Updating messages with:', msg, 'Is Typing:', isTyping);
       console.log('state.individualMessages:', state.individualMessages);
 
-      // Ensure individualMessages is an array
       if (!Array.isArray(state.individualMessages)) {
         console.warn(
           'state.individualMessages is not an array:',
@@ -41,14 +41,12 @@ export const messageReducer = (state, action) => {
         break;
       }
 
-      // Check if there's an existing conversation
       const existingConversation = state.individualMessages.find(
         (conv) => conv.id === msg.sender_id,
       );
       console.log('Existing Conversation:', existingConversation);
 
       if (existingConversation) {
-        // Update existing conversation
         newState = {
           ...state,
           individualMessages: state.individualMessages.map((conv) =>
@@ -80,16 +78,7 @@ export const messageReducer = (state, action) => {
           newState.individualMessages,
         );
       } else {
-        console.log('No existing conversation found. Is Typing:', isTyping);
-
-        // Add new conversation if not typing
-        if (isTyping) {
-          console.log('Is typing indicator only, no new conversation added.');
-          newState = state;
-        } else {
-          console.log('Adding new conversation with message:', msg);
-
-          // Add the new conversation
+        
           newState = {
             ...state,
             individualMessages: [
@@ -105,7 +94,22 @@ export const messageReducer = (state, action) => {
 
           console.log('New conversation added:', newState.individualMessages);
         }
-      }
+      
+      break;
+
+    case messageActionTypes.CLEAR_UNREAD_COUNT:
+      console.log('Clearing unread count for roomId:', action.payload);
+      newState = {
+        ...state,
+        individualMessages: state.individualMessages.map((conv) =>
+          conv.id === action.payload
+            ? {
+                ...conv,
+                unread_count: 0,
+              }
+            : conv,
+        ),
+      };
       break;
 
     case messageActionTypes.RESET_TYPING_INDICATOR:
