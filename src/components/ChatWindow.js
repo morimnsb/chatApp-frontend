@@ -13,20 +13,30 @@ const ChatWindow = ({ roomId }) => {
   const [typing, setTyping] = useState(null);
 
   const accessToken = localStorage.getItem('access_token');
-  const socketUrl = `ws://localhost:8000/ws/chat/${roomId}/?token=${accessToken}`;
+
+  // Only create socket URL and fetch config if roomId is valid
+  const socketUrl = useMemo(
+    () =>
+      roomId
+        ? `ws://localhost:8000/ws/chat/${roomId}/?token=${accessToken}`
+        : null,
+    [roomId, accessToken],
+  );
 
   const fetchConfig = useMemo(
-    () => ({
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }),
-    [accessToken],
+    () =>
+      roomId ? { headers: { Authorization: `Bearer ${accessToken}` } } : {},
+    [roomId, accessToken],
   );
 
   const {
     data: fetchedMessages,
     loading,
     error: fetchError,
-  } = useFetch(`http://localhost:8000/chatMeetUp/messages/${roomId}/`, fetchConfig);
+  } = useFetch(
+    roomId ? `http://localhost:8000/chatMeetUp/messages/${roomId}/` : null,
+    fetchConfig,
+  );
 
   const currentUser = useMemo(() => {
     try {
@@ -40,6 +50,8 @@ const ChatWindow = ({ roomId }) => {
 
   const handleNotification = useCallback(
     (message) => {
+      if (!message || !message.type) return;
+
       switch (message.type) {
         case 'message':
           if (message.message) {
@@ -78,16 +90,19 @@ const ChatWindow = ({ roomId }) => {
           console.error('Unknown message type:', message.type);
       }
     },
-    [ currentUser],
+    [currentUser],
   );
 
-  const { sendJsonMessage, readyState } = useChatWebSocket(socketUrl, handleNotification);
+  const { sendJsonMessage, readyState } = useChatWebSocket(
+    socketUrl,
+    handleNotification,
+  );
 
   useEffect(() => {
-    if (fetchedMessages) {
+    if (roomId && fetchedMessages) {
       setMessages(fetchedMessages);
     }
-  }, [fetchedMessages]);
+  }, [fetchedMessages, roomId]);
 
   useEffect(() => {
     if (fetchError) {
@@ -142,6 +157,12 @@ const ChatWindow = ({ roomId }) => {
     }
   }, []);
 
+  if (!roomId) {
+    return (
+      <div className="no-chat-selected">Select a chat to start messaging</div>
+    );
+  }
+
   return (
     <div className="chat-window">
       {loading && (
@@ -159,7 +180,7 @@ const ChatWindow = ({ roomId }) => {
               {msg.sender_first_name && (
                 <div className="chat-header-details">
                   <img
-                    src={msg.photo}
+                    src={msg.photo || 'default-image.png'}
                     alt={msg.sender_first_name}
                     className="chat-header-img"
                   />

@@ -1,102 +1,31 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { Spinner, Alert, Container, Row, Col } from 'react-bootstrap';
-import './HomeChat.css';
-import ChatWindow from './ChatWindow';
-import { jwtDecode } from 'jwt-decode';
+import React, { useState, useReducer, useCallback, useMemo, useEffect } from 'react';
+import { messageReducer, messageActionTypes } from './messageReducer'; // Adjust path as needed
+import { Container, Row, Col, Spinner, Alert } from 'react-bootstrap';
+import { jwtDecode } from 'jwt-decode'; // Corrected import
 import useChatWebSocket from './useChatWebSocket';
 import useFetch from './useFetch';
-import { ToastContainer, toast } from 'react-toastify';
-import Header from './Header';
 import MessageList from './MessageList';
+import ChatWindow from './ChatWindow';
+import Header from './Header';
 import UserModal from './UserModal';
+import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import './HomeChat.css';
 
-// Custom hook for managing messages
-const useMessages = () => {
-  const [individualMessages, setIndividualMessages] = useState([]);
-
-  const updateMessages = useCallback((msg, isTyping = false) => {
-    setIndividualMessages((prevMessages) => {
-      const existingConversation = prevMessages.find(
-        (conv) => conv.id === msg.sender_id,
-      );
-
-      if (existingConversation) {
-        return isTyping
-          ? prevMessages.map((conv) =>
-              conv.id === msg.sender_id
-                ? {
-                    ...conv,
-                    last_message: {
-                      ...conv.last_message,
-                      content: 'Typing...',
-                      originalContent: conv.last_message.content,
-                    },
-                  }
-                : conv,
-            )
-          : prevMessages.map((conv) =>
-              conv.id === msg.sender_id
-                ? {
-                    ...conv,
-                    last_message: msg,
-                    unread_count: (conv.unread_count || 0) + 1,
-                  }
-                : conv,
-            );
-      } else {
-        return isTyping
-          ? prevMessages
-          : [
-              ...prevMessages,
-              {
-                id: msg.sender_id,
-                first_name: msg.sender_first_name,
-                last_message: msg,
-                unread_count: 1,
-              },
-            ];
-      }
-    });
-  }, []);
-
-  const resetTypingIndicator = useCallback((userId) => {
-    setIndividualMessages((prevMessages) =>
-      prevMessages.map((conv) =>
-        conv.id === userId
-          ? {
-              ...conv,
-              last_message: {
-                ...conv.last_message,
-                content:
-                  conv.last_message.originalContent ||
-                  conv.last_message.content,
-              },
-            }
-          : conv,
-      ),
-    );
-  }, []);
-
-  return {
-    individualMessages,
-    setIndividualMessages,
-    updateMessages,
-    resetTypingIndicator,
-  };
+const initialState = {
+  individualMessages: [], // Ensure this matches what your reducer expects
+  // other state properties if needed
 };
 
-
-
 const HomeChat = () => {
+  const [state, dispatch] = useReducer(messageReducer, initialState);
+  const { individualMessages } = state; // Access state from reducer
+
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
-  const [groupMessages, setGroupMessages] = useState([]);
-  const [typing, setTyping] = useState(null);
 
   const accessToken = localStorage.getItem('access_token');
-
   const currentUser = useMemo(() => {
     try {
       return jwtDecode(accessToken)?.user_id || null;
@@ -106,150 +35,117 @@ const HomeChat = () => {
     }
   }, [accessToken]);
 
-  const socketUrl = `ws://localhost:8000/ws/chat/?token=${accessToken}`;
-
   const fetchConfig = useMemo(
-    () => ({
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }),
+    () => ({ headers: { Authorization: `Bearer ${accessToken}` } }),
     [accessToken],
   );
 
   const {
-    data: fetchedIndividualMessages,
+    data: fetchedIndividualMessages = { partners: [] },
     loading: loadingIndividual,
     error: errorIndividual,
     retry: retryIndividual,
   } = useFetch('http://localhost:8000/chatMeetUp/conversations/', fetchConfig);
 
   const {
-    data: fetchedGroupMessages,
+    data: fetchedGroupMessages = [],
     loading: loadingGroup,
     error: errorGroup,
     retry: retryGroup,
-  } = useFetch('http://localhost:8000/chatMeetUp/chatrooms/');
+  } = useFetch('http://localhost:8000/chatMeetUp/chatrooms/', fetchConfig);
 
   const {
-    data: users,
+    data: users = [],
     loading: loadingUsers,
     error: errorUsers,
     retry: retryUsers,
-  } = useFetch('http://localhost:8000/api/auth/users');
+  } = useFetch('http://localhost:8000/api/auth/users', fetchConfig);
 
-  const {
-    individualMessages,
-    setIndividualMessages,
-    updateMessages,
-    resetTypingIndicator,
-  } = useMessages();
-
+  // Synchronize fetched messages with reducer state
   useEffect(() => {
-    if (
-      fetchedIndividualMessages?.partners &&
-      Array.isArray(fetchedIndividualMessages.partners)
-    ) {
-      setIndividualMessages(fetchedIndividualMessages.partners);
+    if (fetchedIndividualMessages && Array.isArray(fetchedIndividualMessages.partners)) {
+      dispatch({
+        type: messageActionTypes.SET_INDIVIDUAL_MESSAGES,
+        payload: fetchedIndividualMessages.partners,
+      });
     }
+  }, [fetchedIndividualMessages]);
 
+  const filteredIndividualMessages = useMemo(() => {
+    if (Array.isArray(individualMessages)) {
+      console.log('Filtering individual messages...');
+      return individualMessages.filter((user) =>
+        user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
+      );
+    } else {
+      console.warn(
+        'individualMessages is not an array or is null:',
+        individualMessages,
+      );
+      return [];
+    }
+  }, [individualMessages, searchQuery]);
+
+  const filteredGroupMessages = useMemo(() => {
     if (Array.isArray(fetchedGroupMessages)) {
-      setGroupMessages(fetchedGroupMessages);
+      console.log('Filtering group messages...');
+      return fetchedGroupMessages.filter((room) =>
+        room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
+      );
+    } else {
+      console.warn(
+        'fetchedGroupMessages is not an array or is null:',
+        fetchedGroupMessages,
+      );
+      return [];
     }
-  }, [fetchedIndividualMessages, fetchedGroupMessages, setIndividualMessages]);
+  }, [fetchedGroupMessages, searchQuery]);
 
-  const handleSelectChat = useCallback((roomId) => {
-    setSelectedRoom(roomId);
+  const handleNotification = useCallback((message) => {
+    const { type, message: msg } = message;
+    console.log('WebSocket message received:', message);
+
+    switch (type) {
+      case 'status_notify':
+        toast.info(`User ${msg.user_first_name} is now ${msg.status}.`);
+        break;
+      case 'new_message_notification':
+        toast.info(`New message from ${msg.sender_first_name}.`);
+        dispatch({
+          type: messageActionTypes.UPDATE_MESSAGES,
+          payload: { msg },
+        });
+        break;
+      case 'typing_indicator':
+        toast.info(`User ${msg.sender_id} is typing.`);
+        dispatch({
+          type: messageActionTypes.UPDATE_MESSAGES,
+          payload: { msg, isTyping: true },
+        });
+        setTimeout(() => {
+          dispatch({
+            type: messageActionTypes.RESET_TYPING_INDICATOR,
+            payload: msg.sender_id,
+          });
+        }, 5000);
+        break;
+      default:
+        console.error('Unknown message type:', type);
+    }
   }, []);
 
-  const handleNotification = useCallback(
-    (message) => {
-      const { type, message: msg } = message;
-
-      switch (type) {
-        case 'status_notify':
-          toast.info(`User ${msg.user_first_name} is now ${msg.status}.`);
-          break;
-
-        case 'new_message_notification':
-          toast.info(`New message from ${msg.sender_first_name}.`);
-          updateMessages(msg);
-          break;
-
-        case 'typing_indicator':
-          toast.info(`User ${msg.sender_id} is typing.`);
-          updateMessages(msg, true);
-
-          // Restore the original content after 5 seconds
-          setTimeout(() => {
-            resetTypingIndicator(msg.sender_id);
-            setTyping(null);
-          }, 5000);
-          break;
-
-        default:
-          console.error('Unknown message type:', message.type);
-      }
-    },
-    [updateMessages, resetTypingIndicator],
+  useChatWebSocket(
+    `ws://localhost:8000/ws/chat/?token=${accessToken}`,
+    handleNotification,
+    true,
   );
 
-  useChatWebSocket(socketUrl, handleNotification, true); // Adding a reconnect option
-
-  const handleGenerateRoomId = useCallback(
-    (receiverId) => {
-      try {
-        const receiverIdStr = String(receiverId);
-        const currentUserIdStr = String(currentUser);
-        const { BigInt } = window;
-        const bigintReceiver = BigInt(`0x${receiverIdStr.replace(/-/g, '')}`);
-        const bigintCurrentUser = BigInt(
-          `0x${currentUserIdStr.replace(/-/g, '')}`,
-        );
-        const xorResult = bigintReceiver ^ bigintCurrentUser;
-        const xorResultHex = xorResult.toString(16);
-        const roomId = `${xorResultHex.substr(0, 8)}-${xorResultHex.substr(
-          8,
-          4,
-        )}-${xorResultHex.substr(12, 4)}-${xorResultHex.substr(
-          16,
-          4,
-        )}-${xorResultHex.substr(20)}`;
-        handleSelectChat(roomId);
-      } catch (error) {
-        console.error('Error generating room ID:', error);
-      }
+  const handleSelectChat = useCallback(
+    (roomId) => {
+      setSelectedRoom(roomId);
     },
-    [currentUser, handleSelectChat],
+    [setSelectedRoom],
   );
-
-  const handleUserSelect = useCallback(
-    (user) => {
-      setShowUserDropdown(false);
-      handleGenerateRoomId(user.id);
-      setIndividualMessages((prevMessages) => {
-        const userExists = prevMessages.some(
-          (message) => message.id === user.id,
-        );
-        if (userExists) {
-          return prevMessages.map((message) =>
-            message.id === user.id ? { ...message, unread_count: 0 } : message,
-          );
-        }
-        return [
-          ...prevMessages,
-          {
-            id: user.id,
-            first_name: user.first_name,
-            last_message: null,
-            unread_count: 0,
-            photo: user.photo,
-            is_online: user.is_online || false,
-          },
-        ];
-      });
-    },
-    [handleGenerateRoomId, setIndividualMessages],
-  );
-
   const handleFriendshipRequest = async (userId) => {
     try {
       const response = await fetch(
@@ -277,38 +173,12 @@ const HomeChat = () => {
     }
   };
 
+
   const retryFetch = useCallback(() => {
     retryIndividual();
     retryGroup();
     retryUsers();
   }, [retryIndividual, retryGroup, retryUsers]);
-
-  const filteredIndividualMessages = useMemo(
-    () =>
-      Array.isArray(individualMessages)
-        ? individualMessages.filter((user) =>
-            user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
-          )
-        : [],
-    [individualMessages, searchQuery],
-  );
-
-  const filteredGroupMessages = useMemo(
-    () =>
-      Array.isArray(groupMessages)
-        ? groupMessages.filter((room) =>
-            room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
-          )
-        : [],
-    [groupMessages, searchQuery],
-  );
-
-  const totalFilteredMessages = useMemo(
-    () =>
-      (filteredIndividualMessages.length || 0) +
-      (filteredGroupMessages.length || 0),
-    [filteredIndividualMessages, filteredGroupMessages],
-  );
 
   const filteredUsers = useMemo(
     () => users?.filter((user) => user.id !== currentUser),
@@ -317,43 +187,37 @@ const HomeChat = () => {
 
   return (
     <Container fluid className="messages-container">
+      <Header
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        setShowUserDropdown={setShowUserDropdown}
+      />
       <Row>
         <Col md={4} className="messages-list">
-          <Header
-            searchQuery={searchQuery}
-            setSearchQuery={setSearchQuery}
-            setShowUserDropdown={setShowUserDropdown}
-            totalFilteredMessages={totalFilteredMessages}
-            onRetry={retryFetch} // Added a retry button
-          />
           {loadingIndividual || loadingGroup ? (
-            <div className="loading-spinner">
-              <Spinner animation="border" />
-            </div>
+            <Spinner animation="border" variant="primary" />
           ) : errorIndividual || errorGroup ? (
             <Alert variant="danger">
-              {errorIndividual?.message ||
-                errorGroup?.message ||
-                'An error occurred while fetching messages'}
+              Error loading messages.{' '}
               <button onClick={retryFetch}>Retry</button>
             </Alert>
           ) : (
             <MessageList
               filteredIndividualMessages={filteredIndividualMessages}
               filteredGroupMessages={filteredGroupMessages}
-              handleGenerateRoomId={handleGenerateRoomId}
               handleSelectChat={handleSelectChat}
               selectedRoom={selectedRoom}
+              currentUser={currentUser}
             />
           )}
         </Col>
-        <Col md={8} className="chat-window">
-          {selectedRoom ? (
-            <ChatWindow roomId={selectedRoom} accessToken={accessToken} />
-          ) : (
-            <div className="no-chat-selected">
-              Select a chat to start messaging
-            </div>
+        <Col md={8}>
+          {selectedRoom && (
+            <ChatWindow
+              roomId={selectedRoom}
+              individualMessages={filteredIndividualMessages} // Pass filtered data
+              groupMessages={filteredGroupMessages}
+            />
           )}
         </Col>
       </Row>
@@ -362,8 +226,9 @@ const HomeChat = () => {
         setShowUserDropdown={setShowUserDropdown}
         loadingUsers={loadingUsers}
         errorUsers={errorUsers}
+        currentUser={currentUser}
         filteredUsers={filteredUsers}
-        handleUserSelect={handleUserSelect}
+        handleSelectChat={handleSelectChat}
         handleFriendshipRequest={handleFriendshipRequest}
       />
       <ToastContainer />
