@@ -27,7 +27,7 @@ export const messageReducer = (state, action) => {
       break;
 
     case messageActionTypes.UPDATE_MESSAGES:
-      const { msg, isTyping } = action.payload;
+      const { msg, isTyping, isStatus } = action.payload;
       console.log('Updating messages with:', msg, 'Is Typing:', isTyping);
       console.log('state.individualMessages:', state.individualMessages);
 
@@ -61,6 +61,11 @@ export const messageReducer = (state, action) => {
                       content: 'Typing...',
                       originalContent: conv.last_message?.content || '',
                     },
+                  }
+                : isStatus
+                ? {
+                    ...conv,
+                    is_online: msg.status,
                   }
                 : {
                     ...conv,

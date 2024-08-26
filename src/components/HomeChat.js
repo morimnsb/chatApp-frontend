@@ -108,6 +108,11 @@ const HomeChat = () => {
     switch (type) {
       case 'status_notify':
         toast.info(`User ${msg.user_first_name} is now ${msg.status}.`);
+        dispatch({
+          type: messageActionTypes.UPDATE_MESSAGES,
+          payload: { msg, isStatus: true },
+        });
+        console.log("msg",msg)
         break;
       case 'new_message_notification':
         toast.info(`New message from ${msg.sender_first_name}.`);

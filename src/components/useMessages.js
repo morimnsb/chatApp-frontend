@@ -24,10 +24,10 @@ const useMessages = () => {
     dispatch(action);
   }, []);
 
-  const updateMessages = useCallback((msg, isTyping = false) => {
+  const updateMessages = useCallback((msg, isTyping = false, isStatus: false) => {
     const action = {
       type: messageActionTypes.UPDATE_MESSAGES,
-      payload: { msg, isTyping },
+      payload: { msg, isTyping, isStatus },
     };
     logAction(action);
     dispatch(action);
