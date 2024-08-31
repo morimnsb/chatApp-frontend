@@ -8,13 +8,13 @@ import React, {
 import { useDispatch, useSelector } from 'react-redux';
 import { Container, Row, Col, Spinner, Alert } from 'react-bootstrap';
 import { ToastContainer, toast } from 'react-toastify';
-import { jwtDecode } from 'jwt-decode'; // Corrected import
-import useChatWebSocket from '../hooks/useChatWebSocket'; // Adjust path if needed
-import useFetch from '../hooks/useFetch'; // Adjust path if needed
-import MessageList from './MessageList'; // Adjust path if needed
-import ChatWindow from './ChatWindow'; // Adjust path if needed
-import Header from './Header'; // Adjust path if needed
-import UserModal from './UserModal'; // Adjust path if needed
+import {jwtDecode} from 'jwt-decode';
+import useChatWebSocket from '../hooks/useChatWebSocket';
+import useFetch from '../hooks/useFetch';
+import MessageList from './MessageList';
+import ChatWindow from './ChatWindow';
+import Header from './Header';
+import UserModal from './UserModal';
 import 'react-toastify/dist/ReactToastify.css';
 import './HomeChat.css';
 import {
@@ -42,13 +42,14 @@ const HomeChat = () => {
   const error = useSelector((state) => state.messages.error);
   const typingIndicators = useSelector(
     (state) => state.messages.typingIndicators,
-  ); // Select typing indicators from state
+  );
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
   const typingTimeouts = useRef({});
   const accessToken = localStorage.getItem('access_token');
+
   const currentUser = useMemo(() => {
     try {
       return jwtDecode(accessToken)?.user_id || null;
@@ -164,28 +165,19 @@ const HomeChat = () => {
           break;
 
         case 'typing_indicator':
-          // const { room_id, user_id } = msg;
           const user_id = msg.sender_id;
-          
+
           if (!user_id) {
             console.error('User ID is missing in typing indicator message');
             return;
           }
 
-          // Clear any existing timeout for this user
           if (typingTimeouts.current[user_id]) {
             clearTimeout(typingTimeouts.current[user_id]);
           }
 
-          // Set typing indicator for the user
-          dispatch(
-            setTypingIndicator({
-              userId: user_id,
-              isTyping: true,
-            }),
-          );
+          dispatch(setTypingIndicator({ userId: user_id, isTyping: true }));
 
-          // Set a timeout to remove the typing indicator after 5 seconds
           typingTimeouts.current[user_id] = setTimeout(() => {
             dispatch(resetTypingIndicator(user_id));
             delete typingTimeouts.current[user_id];
@@ -285,7 +277,7 @@ const HomeChat = () => {
               handleSelectChat={handleSelectChat}
               selectedRoom={selectedRoom}
               currentUser={currentUser}
-              typingIndicators={typingIndicators} // Pass typingIndicators here
+              typingIndicators={typingIndicators}
             />
           )}
         </Col>

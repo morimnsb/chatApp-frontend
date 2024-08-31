@@ -1,27 +1,9 @@
-import React, { useMemo, useEffect } from 'react';
+import React, { useMemo } from 'react';
 import { ListGroup } from 'react-bootstrap';
-import { format, parseISO, isToday, isYesterday } from 'date-fns';
-import useGenerateRoomId from './useGenerateRoomId'; // Ensure path is correct
+import useGenerateRoomId from '../hooks/useGenerateRoomId'; // Ensure path is correct
+import { formatTime } from '../utils/formatTime'; // Import the utility function
 import profilephoto1 from '../assets/images/message/profilephoto1.png';
 import './MessageList.css';
-
-const formatTimestamp = (timestamp) => {
-  if (!timestamp) return '';
-
-  try {
-    const date = parseISO(timestamp);
-    if (isToday(date)) {
-      return format(date, 'hh:mm a');
-    } else if (isYesterday(date)) {
-      return `Yesterday at ${format(date, 'hh:mm a')}`;
-    } else {
-      return format(date, 'MMM d, yyyy, hh:mm a');
-    }
-  } catch (error) {
-    console.error('Error formatting timestamp:', error);
-    return 'Invalid date';
-  }
-};
 
 const MessageList = ({
   filteredIndividualMessages,
@@ -42,19 +24,9 @@ const MessageList = ({
     [filteredGroupMessages],
   );
 
-  useEffect(() => {
-    console.log(
-      'Rendering MessageList with individualMessages:',
-      individualMessages,
-    );
-    console.log('Rendering MessageList with groupMessages:', groupMessages);
-  }, [individualMessages, groupMessages]);
-
   const renderTypingIndicator = (userId) => {
-    console.log('renderTypingIndicator_is_called_for:', userId);
     const isTyping = typingIndicators[userId];
-    if (!isTyping) return null;
-    return `is typing...`;
+    return isTyping ? 'is typing...' : null;
   };
 
   return (
@@ -85,7 +57,7 @@ const MessageList = ({
                 <div className="message-header">
                   <span className="user-name">{user.first_name}</span>
                   <span className="time-text">
-                    {formatTimestamp(user.last_message?.timestamp)}
+                    {formatTime(user.last_message?.timestamp)}
                   </span>
                 </div>
                 <div className="message-details">
@@ -107,6 +79,7 @@ const MessageList = ({
           No individual messages available
         </ListGroup.Item>
       )}
+
       <ListGroup.Item disabled className="list-group-header">
         GROUP MESSAGES
       </ListGroup.Item>
@@ -132,7 +105,7 @@ const MessageList = ({
                 <div className="message-header">
                   <span className="room-name">{room.name}</span>
                   <span className="time-text">
-                    {formatTimestamp(room.last_message?.timestamp)}
+                    {formatTime(room.last_message?.timestamp)}
                   </span>
                 </div>
                 <div className="message-details">

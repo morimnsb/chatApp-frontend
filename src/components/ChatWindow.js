@@ -1,24 +1,25 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Form, Button, Spinner, Alert } from 'react-bootstrap';
-import { format, parseISO, isToday, isYesterday } from 'date-fns';
-import useFetch from '../hooks/useFetch'; // Adjust path if necessary
-import useChatWebSocket from '../hooks/useChatWebSocket'; // Adjust path if necessary
-import './ChatWindow.css';
-import { jwtDecode } from 'jwt-decode'; // Corrected import
-import { useDispatch } from 'react-redux'; // Import useDispatch
+import useFetch from '../hooks/useFetch';
+import useChatWebSocket from '../hooks/useChatWebSocket';
+import { useDispatch } from 'react-redux';
 import {
   updateLastMessage,
   resetTypingIndicator,
-} from '../actions/messageActions'; // Import action creators
+} from '../actions/messageActions';
+import { formatTime } from '../utils/formatTime'; // Import the utility function
+import { jwtDecode } from 'jwt-decode'; // Use default import for jwt-decode
+import './ChatWindow.css';
 
 const ChatWindow = ({ roomId }) => {
   const [messages, setMessages] = useState([]);
   const [messageInput, setMessageInput] = useState('');
   const [error, setError] = useState(null);
   const [typing, setTyping] = useState(null);
-  const dispatch = useDispatch(); // Initialize dispatch from Redux
+  const dispatch = useDispatch();
 
   const accessToken = localStorage.getItem('access_token');
+
   const currentUser = useMemo(() => {
     try {
       return jwtDecode(accessToken)?.user_id || null;
@@ -51,6 +52,7 @@ const ChatWindow = ({ roomId }) => {
     roomId ? `http://localhost:8000/chatMeetUp/messages/${roomId}/` : null,
     fetchConfig,
   );
+
 
   const handleNotification = useCallback(
     (message) => {
@@ -161,22 +163,6 @@ const ChatWindow = ({ roomId }) => {
     },
     [sendJsonMessage, currentUser],
   );
-
-  const formatTime = useCallback((timestamp) => {
-    try {
-      const date = parseISO(timestamp);
-      if (isToday(date)) {
-        return format(date, 'hh:mm a');
-      } else if (isYesterday(date)) {
-        return `Yesterday at ${format(date, 'hh:mm a')}`;
-      } else {
-        return format(date, 'MMM d, yyyy, hh:mm a');
-      }
-    } catch (error) {
-      console.error('Error formatting time:', error);
-      return timestamp;
-    }
-  }, []);
 
   if (!roomId) {
     return (

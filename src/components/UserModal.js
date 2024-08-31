@@ -1,6 +1,6 @@
 import React, { memo } from 'react';
 import { Modal, ListGroup, Spinner, Alert, Button } from 'react-bootstrap';
-import useGenerateRoomId from './useGenerateRoomId'; // Adjust the path as needed
+import useGenerateRoomId from '../hooks/useGenerateRoomId'; // Adjust the path as needed
 
 const UserModal = ({
   showUserDropdown,
