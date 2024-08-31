@@ -1,12 +1,16 @@
-// useMessages.js
-
-import { useCallback, useReducer } from 'react';
-import { messageReducer, messageActionTypes } from './messageReducer'; // Ensure correct import path
+import { useCallback } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import {
+  setIndividualMessages as setMessagesAction,
+  updateMessages as updateMessagesAction,
+  resetTypingIndicator as resetTypingIndicatorAction,
+} from './store/actions/messageActions'; // Ensure correct import path
 
 const useMessages = () => {
-  const [state, dispatch] = useReducer(messageReducer, {
-    individualMessages: [],
-  });
+  const dispatch = useDispatch();
+  const individualMessages = useSelector(
+    (state) => state.messages.individualMessages,
+  );
 
   // Debugging utility function
   const logAction = (action) => {
@@ -15,35 +19,35 @@ const useMessages = () => {
     }
   };
 
-  const setIndividualMessages = useCallback((messages) => {
-    const action = {
-      type: messageActionTypes.SET_INDIVIDUAL_MESSAGES,
-      payload: messages,
-    };
-    logAction(action);
-    dispatch(action);
-  }, []);
+  const setIndividualMessages = useCallback(
+    (messages) => {
+      const action = setMessagesAction(messages);
+      logAction(action);
+      dispatch(action);
+    },
+    [dispatch],
+  );
 
-  const updateMessages = useCallback((msg, isTyping = false, isStatus = false) => {
-    const action = {
-      type: messageActionTypes.UPDATE_MESSAGES,
-      payload: { msg, isTyping, isStatus },
-    };
-    logAction(action);
-    dispatch(action);
-  }, []);
+  const updateMessages = useCallback(
+    (msg, isTyping = false, isStatus = false) => {
+      const action = updateMessagesAction(msg, isTyping, isStatus);
+      logAction(action);
+      dispatch(action);
+    },
+    [dispatch],
+  );
 
-  const resetTypingIndicator = useCallback((userId) => {
-    const action = {
-      type: messageActionTypes.RESET_TYPING_INDICATOR,
-      payload: userId,
-    };
-    logAction(action);
-    dispatch(action);
-  }, []);
+  const resetTypingIndicator = useCallback(
+    (userId) => {
+      const action = resetTypingIndicatorAction(userId);
+      logAction(action);
+      dispatch(action);
+    },
+    [dispatch],
+  );
 
   return {
-    individualMessages: state.individualMessages,
+    individualMessages,
     setIndividualMessages,
     updateMessages,
     resetTypingIndicator,

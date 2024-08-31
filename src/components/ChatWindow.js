@@ -1,20 +1,34 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Form, Button, Spinner, Alert } from 'react-bootstrap';
 import { format, parseISO, isToday, isYesterday } from 'date-fns';
-import useFetch from './useFetch';
+import useFetch from '../hooks/useFetch'; // Adjust path if necessary
+import useChatWebSocket from '../hooks/useChatWebSocket'; // Adjust path if necessary
 import './ChatWindow.css';
-import { jwtDecode } from 'jwt-decode';
-import useChatWebSocket from './useChatWebSocket';
+import { jwtDecode } from 'jwt-decode'; // Corrected import
+import { useDispatch } from 'react-redux'; // Import useDispatch
+import {
+  updateLastMessage,
+  resetTypingIndicator,
+} from '../actions/messageActions'; // Import action creators
 
 const ChatWindow = ({ roomId }) => {
   const [messages, setMessages] = useState([]);
   const [messageInput, setMessageInput] = useState('');
   const [error, setError] = useState(null);
   const [typing, setTyping] = useState(null);
+  const dispatch = useDispatch(); // Initialize dispatch from Redux
 
   const accessToken = localStorage.getItem('access_token');
+  const currentUser = useMemo(() => {
+    try {
+      return jwtDecode(accessToken)?.user_id || null;
+    } catch (error) {
+      console.error('Error decoding access token:', error);
+      setError('Error decoding access token.');
+      return null;
+    }
+  }, [accessToken]);
 
-  // Only create socket URL and fetch config if roomId is valid
   const socketUrl = useMemo(
     () =>
       roomId
@@ -38,16 +52,6 @@ const ChatWindow = ({ roomId }) => {
     fetchConfig,
   );
 
-  const currentUser = useMemo(() => {
-    try {
-      return jwtDecode(accessToken)?.user_id || null;
-    } catch (error) {
-      console.error('Error decoding access token:', error);
-      setError('Error decoding access token.');
-      return null;
-    }
-  }, [accessToken]);
-
   const handleNotification = useCallback(
     (message) => {
       if (!message || !message.type) return;
@@ -57,6 +61,10 @@ const ChatWindow = ({ roomId }) => {
           if (message.message) {
             setMessages((prevMessages) => {
               if (!prevMessages.some((msg) => msg.id === message.message.id)) {
+                // Dispatch the action to update the last message in MessageList
+                dispatch(
+                  updateLastMessage(message.message.sender_id, message.message),
+                );
                 return [...prevMessages, message.message];
               }
               return prevMessages;
@@ -74,7 +82,10 @@ const ChatWindow = ({ roomId }) => {
         case 'typing_indicator':
           if (message.user_id) {
             setTyping(message.user_id);
-            setTimeout(() => setTyping(null), 5000);
+            setTimeout(
+              () => dispatch(resetTypingIndicator(message.user_id)),
+              5000,
+            );
           }
           break;
 
@@ -90,7 +101,7 @@ const ChatWindow = ({ roomId }) => {
           console.error('Unknown message type:', message.type);
       }
     },
-    [currentUser],
+    [currentUser, dispatch],
   );
 
   const { sendJsonMessage, readyState } = useChatWebSocket(
@@ -101,8 +112,18 @@ const ChatWindow = ({ roomId }) => {
   useEffect(() => {
     if (roomId && fetchedMessages) {
       setMessages(fetchedMessages);
+
+      // Update last message in MessageList
+      if (fetchedMessages.length > 0) {
+        dispatch(
+          updateLastMessage(
+            fetchedMessages[fetchedMessages.length - 1].id, // Use the last message ID as room ID
+            fetchedMessages[fetchedMessages.length - 1],
+          ),
+        );
+      }
     }
-  }, [fetchedMessages, roomId]);
+  }, [fetchedMessages, roomId, dispatch]);
 
   useEffect(() => {
     if (fetchError) {
@@ -209,25 +230,21 @@ const ChatWindow = ({ roomId }) => {
         )}
       </div>
 
-      <Form className="message-input" onSubmit={handleSendMessage}>
-        <Form.Control
-          type="text"
-          placeholder="Type a message..."
-          value={messageInput}
-          onChange={handleInputChange}
-        />
-        <Button
-          variant="primary"
-          type="submit"
-          disabled={readyState !== WebSocket.OPEN}
-        >
+      <Form onSubmit={handleSendMessage} className="message-form">
+        <Form.Group>
+          <Form.Control
+            type="text"
+            placeholder="Type your message..."
+            value={messageInput}
+            onChange={handleInputChange}
+          />
+        </Form.Group>
+        <Button type="submit" disabled={readyState !== WebSocket.OPEN}>
           Send
         </Button>
       </Form>
 
-      {typing && (
-        <div className="typing-indicator">User {typing} is typing...</div>
-      )}
+      {typing && <div className="typing-indicator">User is typing...</div>}
     </div>
   );
 };

@@ -1,7 +1,7 @@
 import React, { useMemo, useEffect } from 'react';
 import { ListGroup } from 'react-bootstrap';
 import { format, parseISO, isToday, isYesterday } from 'date-fns';
-import useGenerateRoomId from './useGenerateRoomId'; // Make sure the path is correct
+import useGenerateRoomId from './useGenerateRoomId'; // Ensure path is correct
 import profilephoto1 from '../assets/images/message/profilephoto1.png';
 import './MessageList.css';
 
@@ -26,11 +26,11 @@ const formatTimestamp = (timestamp) => {
 const MessageList = ({
   filteredIndividualMessages,
   filteredGroupMessages,
-  currentUser, // Add currentUser prop
+  currentUser,
   handleSelectChat,
   selectedRoom,
+  typingIndicators = {}, // Provide default empty object
 }) => {
-  // Use the useGenerateRoomId hook
   const generateRoomId = useGenerateRoomId(currentUser, handleSelectChat);
 
   const individualMessages = useMemo(
@@ -50,6 +50,13 @@ const MessageList = ({
     console.log('Rendering MessageList with groupMessages:', groupMessages);
   }, [individualMessages, groupMessages]);
 
+  const renderTypingIndicator = (userId) => {
+    console.log('renderTypingIndicator_is_called_for:', userId);
+    const isTyping = typingIndicators[userId];
+    if (!isTyping) return null;
+    return `is typing...`;
+  };
+
   return (
     <ListGroup>
       <ListGroup.Item disabled className="list-group-header">
@@ -61,7 +68,7 @@ const MessageList = ({
             key={user.id}
             action
             active={selectedRoom === user.id}
-            onClick={() => generateRoomId(user.id)} // Use generateRoomId for individual messages
+            onClick={() => generateRoomId(user.id)}
             className="message-list-item"
           >
             <div className="message-row">
@@ -82,7 +89,11 @@ const MessageList = ({
                   </span>
                 </div>
                 <div className="message-details">
-                  <span className="subtext">{user.last_message?.content}</span>
+                  {renderTypingIndicator(user.id) || (
+                    <span className="subtext">
+                      {user.last_message?.content}
+                    </span>
+                  )}
                   {user.unread_count > 0 && (
                     <span className="unread_count">{user.unread_count}</span>
                   )}
@@ -105,7 +116,7 @@ const MessageList = ({
             key={room.id}
             action
             active={selectedRoom === room.id}
-            onClick={() => handleSelectChat(room.id)} // Use handleSelectChat for group messages
+            onClick={() => handleSelectChat(room.id)}
             className="message-list-item"
           >
             <div className="message-row">
