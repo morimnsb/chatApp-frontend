@@ -7,9 +7,50 @@ import {
   updateLastMessage,
   resetTypingIndicator,
 } from '../actions/messageActions';
-import { formatTime } from '../utils/formatTime'; // Import the utility function
-import { jwtDecode } from 'jwt-decode'; // Use default import for jwt-decode
+import { formatTime } from '../utils/formatTime';
+import { jwtDecode } from 'jwt-decode';
 import './ChatWindow.css';
+
+const MessageBubble = React.memo(({ message, currentUser }) => (
+  <div className="message-bubble">
+    {message.sender_first_name && (
+      <div className="chat-header-details">
+        <img
+          src={message.photo || 'default-image.png'}
+          alt={message.sender_first_name}
+          className="chat-header-img"
+        />
+        <div className="chat-header-info">
+          <h4>{message.sender_first_name}</h4>
+        </div>
+      </div>
+    )}
+    <div className="message-text">
+      {message.content}
+      <span className="message-time">{formatTime(message.timestamp)}</span>
+      {message.sender_id === currentUser && (
+        <span className={`read_receipt ${message.read_receipt ? 'read' : ''}`}>
+          ✓✓
+        </span>
+      )}
+    </div>
+  </div>
+));
+
+const MessageList = ({ messages, currentUser }) => (
+  <div className="messages">
+    {messages.length > 0 ? (
+      messages.map((msg) => (
+        <MessageBubble key={msg.id} message={msg} currentUser={currentUser} />
+      ))
+    ) : (
+      <div className="no-messages">No messages yet</div>
+    )}
+  </div>
+);
+
+const TypingIndicator = ({ typing }) =>
+  typing && <div className="typing-indicator">User is typing...</div>;
 
 const ChatWindow = ({ roomId }) => {
   const [messages, setMessages] = useState([]);
@@ -19,23 +60,23 @@ const ChatWindow = ({ roomId }) => {
   const dispatch = useDispatch();
 
   const accessToken = localStorage.getItem('access_token');
+  const apiUrl = process.env.REACT_APP_API_URL;
+
+
 
   const currentUser = useMemo(() => {
     try {
       return jwtDecode(accessToken)?.user_id || null;
     } catch (error) {
       console.error('Error decoding access token:', error);
-      setError('Error decoding access token.');
+      setError('Your session has expired. Please log in again.');
       return null;
     }
   }, [accessToken]);
 
   const socketUrl = useMemo(
-    () =>
-      roomId
-        ? `ws://localhost:8000/ws/chat/${roomId}/?token=${accessToken}`
-        : null,
-    [roomId, accessToken],
+    () => (roomId ? `${apiUrl}/ws/chat/${roomId}/?token=${accessToken}` : null),
+    [roomId, accessToken, apiUrl],
   );
 
   const fetchConfig = useMemo(
@@ -49,9 +90,10 @@ const ChatWindow = ({ roomId }) => {
     loading,
     error: fetchError,
   } = useFetch(
-    roomId ? `http://localhost:8000/chatMeetUp/messages/${roomId}/` : null,
+    roomId ? `${apiUrl}/chatMeetUp/messages/${roomId}/` : null,
     fetchConfig,
   );
+
 
 
   const handleNotification = useCallback(
@@ -63,7 +105,6 @@ const ChatWindow = ({ roomId }) => {
           if (message.message) {
             setMessages((prevMessages) => {
               if (!prevMessages.some((msg) => msg.id === message.message.id)) {
-                // Dispatch the action to update the last message in MessageList
                 dispatch(
                   updateLastMessage(message.message.sender_id, message.message),
                 );
@@ -73,7 +114,7 @@ const ChatWindow = ({ roomId }) => {
             });
 
             if (message.message.sender_id !== currentUser) {
-              sendJsonMessage({
+              sendJsonMessage?.({
                 type: 'read_receipt_confirmation',
                 message_id: message.message.id,
               });
@@ -115,11 +156,10 @@ const ChatWindow = ({ roomId }) => {
     if (roomId && fetchedMessages) {
       setMessages(fetchedMessages);
 
-      // Update last message in MessageList
       if (fetchedMessages.length > 0) {
         dispatch(
           updateLastMessage(
-            fetchedMessages[fetchedMessages.length - 1].id, // Use the last message ID as room ID
+            fetchedMessages[fetchedMessages.length - 1].id,
             fetchedMessages[fetchedMessages.length - 1],
           ),
         );
@@ -143,12 +183,12 @@ const ChatWindow = ({ roomId }) => {
       }
 
       try {
-        sendJsonMessage({ type: 'chat_message', content: messageInput });
+        sendJsonMessage?.({ type: 'chat_message', content: messageInput });
         setMessageInput('');
         setError(null);
       } catch (error) {
         console.error('Error sending message:', error);
-        setError('Error sending message. Please try again.');
+        setError(`Error sending message. Details: ${error.message}`);
       }
     },
     [messageInput, sendJsonMessage],
@@ -158,7 +198,7 @@ const ChatWindow = ({ roomId }) => {
     (e) => {
       setMessageInput(e.target.value);
       if (e.target.value.trim() !== '') {
-        sendJsonMessage({ type: 'typing_indicator', sender_id: currentUser });
+        sendJsonMessage?.({ type: 'typing_indicator', sender_id: currentUser });
       }
     },
     [sendJsonMessage, currentUser],
@@ -180,57 +220,23 @@ const ChatWindow = ({ roomId }) => {
 
       {error && <Alert variant="danger">{error}</Alert>}
 
-      <div className="messages">
-        {messages.length > 0 ? (
-          messages.map((msg) => (
-            <div key={msg.id} className="message-bubble">
-              {msg.sender_first_name && (
-                <div className="chat-header-details">
-                  <img
-                    src={msg.photo || 'default-image.png'}
-                    alt={msg.sender_first_name}
-                    className="chat-header-img"
-                  />
-                  <div className="chat-header-info">
-                    <h4>{msg.sender_first_name}</h4>
-                  </div>
-                </div>
-              )}
-              <div className="message-text">
-                {msg.content}
-                <span className="message-time">
-                  {formatTime(msg.timestamp)}
-                </span>
-                {msg.sender_id === currentUser && (
-                  <span
-                    className={`read_receipt ${msg.read_receipt ? 'read' : ''}`}
-                  >
-                    ✓✓
-                  </span>
-                )}
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="no-messages">No messages yet</div>
-        )}
-      </div>
+      <MessageList messages={messages} currentUser={currentUser} />
 
-      <Form onSubmit={handleSendMessage} className="message-form">
-        <Form.Group>
+      <TypingIndicator typing={typing} />
+
+      <Form onSubmit={handleSendMessage} className="chat-input-form">
+        <Form.Group controlId="messageInput">
           <Form.Control
             type="text"
-            placeholder="Type your message..."
+            placeholder="Type a message..."
             value={messageInput}
             onChange={handleInputChange}
           />
         </Form.Group>
-        <Button type="submit" disabled={readyState !== WebSocket.OPEN}>
+        <Button type="submit" variant="primary">
           Send
         </Button>
       </Form>
-
-      {typing && <div className="typing-indicator">User is typing...</div>}
     </div>
   );
 };

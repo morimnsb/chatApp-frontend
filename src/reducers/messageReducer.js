@@ -101,17 +101,9 @@ const messageReducer = (state = initialState, action) => {
       };
 
     case messageActionTypes.UPDATE_LAST_MESSAGE:
-      console.log('UPDATE_LAST_MESSAGE is called');
 
-      // Log the incoming action payload
-      console.log('Action Payload:', action.payload);
 
-      // Log the current state to inspect the individualMessages array
-      console.log('Current State:', state);
-
-      // Debugging each conversation
       const updatedMessages = state.individualMessages.map((conv) => {
-        console.log('Processing Conversation:', conv);
 
         if (conv.id === action.payload.senderId) {
           console.log('Updating Conversation:', conv);
@@ -121,7 +113,6 @@ const messageReducer = (state = initialState, action) => {
         }
       });
 
-      console.log('Updated Messages:', updatedMessages);
 
       return {
         ...state,

@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { ListGroup } from 'react-bootstrap';
-import useGenerateRoomId from '../hooks/useGenerateRoomId'; // Ensure path is correct
-import { formatTime } from '../utils/formatTime'; // Import the utility function
+import useGenerateRoomId from '../hooks/useGenerateRoomId';
+import { formatTime } from '../utils/formatTime';
 import profilephoto1 from '../assets/images/message/profilephoto1.png';
 import './MessageList.css';
 
