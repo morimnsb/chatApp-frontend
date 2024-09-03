@@ -20,7 +20,6 @@ const VerifyEmail = () => {
         'http://localhost:8000/api/auth/verify-email/',
         { otp },
       );
-      console.log(response.data); // Assuming the response contains success message
       if (response.status === 200) {
         // Redirect to login page
         navigate('/login');

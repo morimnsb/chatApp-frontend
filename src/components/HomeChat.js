@@ -29,8 +29,10 @@ import {
   setTypingIndicator,
   clearUnreadCount,
   resetTypingIndicator,
-  updateLastMessage,
+  updateStatus,
 } from '../actions/messageActions';
+
+const API_BASE_URL = 'http://localhost:8000';
 
 const HomeChat = () => {
   const dispatch = useDispatch();
@@ -71,21 +73,21 @@ const HomeChat = () => {
     loading: loadingIndividual,
     error: errorIndividual,
     retry: retryIndividual,
-  } = useFetch('http://localhost:8000/chatMeetUp/conversations/', fetchConfig);
+  } = useFetch(`${API_BASE_URL}/chatMeetUp/conversations/`, fetchConfig);
 
   const {
     data: fetchedGroupMessages = [],
     loading: loadingGroup,
     error: errorGroup,
     retry: retryGroup,
-  } = useFetch('http://localhost:8000/chatMeetUp/chatrooms/', fetchConfig);
+  } = useFetch(`${API_BASE_URL}/chatMeetUp/chatrooms/`, fetchConfig);
 
   const {
     data: users = [],
     loading: loadingUsers,
     error: errorUsers,
     retry: retryUsers,
-  } = useFetch('http://localhost:8000/api/auth/users', fetchConfig);
+  } = useFetch(`${API_BASE_URL}/api/auth/users`, fetchConfig);
 
   useEffect(() => {
     if (currentUser) {
@@ -136,18 +138,14 @@ const HomeChat = () => {
   );
 
   const filteredGroupMessages = useMemo(() => {
-    if (Array.isArray(fetchedGroupMessages)) {
-      return fetchedGroupMessages.filter((room) =>
+    if (Array.isArray(groupMessages)) {
+      return groupMessages.filter((room) =>
         room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
       );
     } else {
-      console.log(
-        'fetchedGroupMessages is not an array or is null:',
-        fetchedGroupMessages,
-      );
       return [];
     }
-  }, [fetchedGroupMessages, searchQuery]);
+  }, [groupMessages, searchQuery]);
 
   const handleNotification = useCallback(
     (message) => {
@@ -156,12 +154,12 @@ const HomeChat = () => {
       switch (type) {
         case 'status_notify':
           toast.info(`User ${msg.user_first_name} is now ${msg.status}.`);
-          dispatch(updateMessages(msg, false, true));
+          dispatch(updateStatus(msg.sender_id, msg.status));
           break;
 
         case 'new_message_notification':
           toast.info(`New message from ${msg.sender_first_name}.`);
-          dispatch(updateMessages(msg, false, false));
+          dispatch(updateMessages(message));
           break;
 
         case 'typing_indicator':
@@ -184,14 +182,9 @@ const HomeChat = () => {
           }, 5000);
           break;
 
-        case 'update_last_message':
-          dispatch(
-            updateLastMessage({
-              sender_id: msg.sender_id,
-              lastMessage: msg.lastMessage,
-            }),
-          );
-          break;
+        // case 'update_last_message':
+        //   dispatch(updateLastMessage(msg.sender_id, msg.lastMessage));
+        //   break;
 
         default:
           console.error('Unknown message type:', type);
@@ -217,17 +210,14 @@ const HomeChat = () => {
 
   const handleFriendshipRequest = async (userId) => {
     try {
-      const response = await fetch(
-        'http://localhost:8000/chatMeetUp/friendship/',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ to_user_id: userId }),
+      const response = await fetch(`${API_BASE_URL}/chatMeetUp/friendship/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
         },
-      );
+        body: JSON.stringify({ to_user_id: userId }),
+      });
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -253,7 +243,6 @@ const HomeChat = () => {
     () => users?.filter((user) => user.id !== currentUser),
     [users, currentUser],
   );
-
   return (
     <Container fluid className="messages-container">
       <Header
@@ -273,7 +262,7 @@ const HomeChat = () => {
           ) : (
             <MessageList
               filteredIndividualMessages={filteredIndividualMessages}
-              filteredGroupMessages={filteredGroupMessages}
+              filteredGroupMessages={filteredGroupMessages} // Pass filteredGroupMessages
               handleSelectChat={handleSelectChat}
               selectedRoom={selectedRoom}
               currentUser={currentUser}
@@ -286,7 +275,7 @@ const HomeChat = () => {
             <ChatWindow
               roomId={selectedRoom}
               individualMessages={filteredIndividualMessages}
-              groupMessages={filteredGroupMessages}
+              groupMessages={filteredGroupMessages} // Pass groupMessages
             />
           )}
         </Col>

@@ -1,5 +1,3 @@
-// src/store/actions/messageActions.js
-
 import messageActionTypes from './messageActionTypes';
 
 /**
@@ -50,17 +48,25 @@ export const selectRoom = (roomId) => ({
 /**
  * Updates messages based on different scenarios: new message, typing indicator, or status update.
  * @param {Object} msg - The message object containing message details.
- * @param {boolean} [isTyping=false] - Flag indicating if it's a typing indicator.
- * @param {boolean} [isStatus=false] - Flag indicating if it's a status update.
  */
-export const updateMessages = (msg, isTyping = false, isStatus = false) => ({
+export const updateMessages = (message) => ({
   type: messageActionTypes.UPDATE_MESSAGES,
-  payload: { msg, isTyping, isStatus },
+  payload: { message },
+});
+
+/**
+ * Updates the online status of a user in a conversation.
+ * @param {string} senderId - The ID of the sender.
+ * @param {boolean} status - The online status of the user.
+ */
+export const updateStatus = (senderId, status) => ({
+  type: messageActionTypes.UPDATE_STATUS,
+  payload: { senderId, status },
 });
 
 /**
  * Resets the typing indicator for a specific user or room.
- * @param {string} identifier - The ID of the user or room.
+ * @param {string} userId - The ID of the user or room.
  */
 export const resetTypingIndicator = (userId) => ({
   type: messageActionTypes.RESET_TYPING_INDICATOR,
@@ -76,15 +82,15 @@ export const clearUnreadCount = (conversationId) => ({
   payload: conversationId,
 });
 
-/**
- * Updates the last message of a conversation.
- * @param {string} senderId - The ID of the sender.
- * @param {Object} lastMessage - The last message object.
- */
-export const updateLastMessage = (senderId, lastMessage) => ({
-  type: messageActionTypes.UPDATE_LAST_MESSAGE,
-  payload: { senderId, lastMessage },
-});
+// /**
+//  * Updates the last message of a conversation.
+//  * @param {string} senderId - The ID of the sender.
+//  * @param {Object} lastMessage - The last message object.
+//  */
+// export const updateLastMessage = (senderId, lastMessage) => ({
+//   type: messageActionTypes.UPDATE_LAST_MESSAGE,
+//   payload: { senderId, lastMessage },
+// });
 
 /**
  * Sets the loading state in the Redux store.
@@ -105,14 +111,9 @@ export const setError = (error) => ({
 });
 
 /**
- * Sets the typing indicator for a specific room.
- * @param {string} roomId - The ID of the room.
- * @param {boolean} isTyping - Indicates whether typing is in progress.
+ * Sets the typing indicator for a specific user or room.
+ * @param {Object} payload - The object containing userId or roomId and isTyping status.
  */
-// export const setTypingIndicator = (roomId, isTyping) => ({
-//   type: messageActionTypes.SET_TYPING_INDICATOR,
-//   payload: { roomId, isTyping },
-// });
 export const setTypingIndicator = (payload) => ({
   type: messageActionTypes.SET_TYPING_INDICATOR,
   payload,

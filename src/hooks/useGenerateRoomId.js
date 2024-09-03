@@ -6,7 +6,6 @@ const useGenerateRoomId = (currentUser, handleSelectChat) => {
       try {
         const receiverIdStr = String(receiverId);
         const currentUserIdStr = String(currentUser);
-        console.log(receiverIdStr, currentUserIdStr);
         const { BigInt } = window;
         const bigintReceiver = BigInt(`0x${receiverIdStr.replace(/-/g, '')}`);
         const bigintCurrentUser = BigInt(

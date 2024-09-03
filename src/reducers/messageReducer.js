@@ -1,4 +1,3 @@
-// src/store/reducers/messageReducer.js
 import messageActionTypes from '../actions/messageActionTypes';
 
 const initialState = {
@@ -10,6 +9,13 @@ const initialState = {
   loading: false,
   error: null,
   typingIndicators: {},
+};
+
+// Helper function to find the index of a conversation by sender ID
+const findConversationIndex = (conversations, senderId) => {
+
+
+  return conversations.findIndex((conv) => conv.id === senderId);
 };
 
 const messageReducer = (state = initialState, action) => {
@@ -45,79 +51,131 @@ const messageReducer = (state = initialState, action) => {
       };
 
     case messageActionTypes.UPDATE_MESSAGES: {
-      const { msg, isTyping, isStatus } = action.payload;
-      console.log('msg:', msg);
-      console.log('msg.sender_id:', msg.sender_id);
-      const existingConversation = state.individualMessages.find(
-        (conv) => conv.id === msg.sender_id,
+      const { message } = action.payload;
+      const msg = message.message;
+      const type = message.type;
+      const isNewMessageNotification = type === 'new_message_notification';
+
+
+      const senderId = msg.sender_id;
+      const receiverId = msg.receiver_id;
+
+      // Determine the ID to use for finding or creating the conversation
+      const conversationId =
+        state.currentUser === senderId ? receiverId : senderId;
+
+      // Find the index of the existing conversation
+      const existingConversationIndex = findConversationIndex(
+        state.individualMessages,
+        conversationId,
       );
 
-      if (existingConversation) {
+      // Handle the conversation update based on whether it exists or not
+      let newIndividualMessages;
+      if (existingConversationIndex !== -1) {
+        // Conversation exists, update the last_message and increment unread_count
+        newIndividualMessages = state.individualMessages.map((conv, index) =>
+          index === existingConversationIndex
+            ? {
+                ...conv,
+                last_message: msg,
+                unread_count: isNewMessageNotification
+                  ? (conv.unread_count || 0) + 1
+                  : conv.unread_count,
+              }
+            : conv,
+        );
+
+      } else {
+        // Conversation does not exist, create a new conversation
+        const newConversation = {
+          id: conversationId,
+          first_name: '', // Default to empty in case user is not found
+          last_message: msg,
+          unread_count: isNewMessageNotification ? 1 : 0,
+          typing: false,
+          is_online: false, // Default to false in case user is not found
+        };
+
+        // Find the user from the users array using conversationId
+        const user = state.users.find((user) => user.id === conversationId);
+
+        if (user) {
+          newConversation.first_name = user.first_name;
+          newConversation.is_online = user.is_online;
+        }
+
+        newIndividualMessages = [newConversation, ...state.individualMessages];
+      }
+
+      return {
+        ...state,
+        individualMessages: newIndividualMessages,
+      };
+    }
+
+    case messageActionTypes.UPDATE_STATUS: {
+      const { senderId, status } = action.payload;
+
+      const existingConversationIndex = findConversationIndex(
+        state.individualMessages,
+        senderId,
+      );
+
+      if (existingConversationIndex !== -1) {
         return {
           ...state,
-          individualMessages: state.individualMessages.map((conv) =>
-            conv.id === msg.sender_id
-              ? {
-                  ...conv,
-                  ...(isTyping && {
-                    typing: true,
-                  }),
-                  ...(isStatus && {
-                    is_online: msg.status,
-                  }),
-                  ...(!isTyping &&
-                    !isStatus && {
-                      last_message: msg,
-                      unread_count: (conv.unread_count || 0) + 1,
-                    }),
-                }
+          individualMessages: state.individualMessages.map((conv, index) =>
+            index === existingConversationIndex
+              ? { ...conv, is_online: status }
               : conv,
           ),
         };
-      } else {
-        return {
-          ...state,
-          individualMessages: [
-            {
-              id: msg.sender_id,
-              first_name: msg.sender_first_name,
-              last_message: msg,
-              unread_count: 1,
-              typing: isTyping || false,
-              is_online: isStatus ? msg.status : true,
-            },
-            ...state.individualMessages,
-          ],
-        };
       }
+      return state; // No change if the conversation doesn't exist
     }
 
-    case messageActionTypes.CLEAR_UNREAD_COUNT:
-      return {
-        ...state,
-        individualMessages: state.individualMessages.map((conv) =>
-          conv.id === action.payload ? { ...conv, unread_count: 0 } : conv,
-        ),
-      };
+    case messageActionTypes.CLEAR_UNREAD_COUNT: {
+      const conversationId = action.payload;
 
-    case messageActionTypes.UPDATE_LAST_MESSAGE:
+      const existingConversationIndex = findConversationIndex(
+        state.individualMessages,
+        conversationId,
+      );
 
+      if (existingConversationIndex !== -1) {
+        return {
+          ...state,
+          individualMessages: state.individualMessages.map((conv, index) =>
+            index === existingConversationIndex
+              ? { ...conv, unread_count: 0 }
+              : conv,
+          ),
+        };
+      }
+      return state; // No change if the conversation doesn't exist
+    }
 
-      const updatedMessages = state.individualMessages.map((conv) => {
+    // case messageActionTypes.UPDATE_LAST_MESSAGE: {
+    //   const { senderId, lastMessage } = action.payload;
 
-        if (conv.id === action.payload.senderId) {
-          console.log('Updating Conversation:', conv);
-          return { ...conv, last_message: action.payload.lastMessage };
-        } else {
-          return conv;
-        }
-      });
+    //   const existingConversationIndex = findConversationIndex(
+    //     state.individualMessages,
+    //     senderId,
+    //   );
 
-
-      return {
-        ...state,
-        individualMessages: updatedMessages,
-      };
+    //   if (existingConversationIndex !== -1) {
+    //     return {
+    //       ...state,
+    //       individualMessages: state.individualMessages.map((conv, index) =>
+    //         index === existingConversationIndex
+    //           ? { ...conv, last_message: lastMessage }
+    //           : conv,
+    //       ),
+    //     };
+    //   }
+    //   return state; // No change if the conversation doesn't exist
+    // }
 
     case messageActionTypes.SET_LOADING:
       return {
@@ -131,12 +189,8 @@ const messageReducer = (state = initialState, action) => {
         error: action.payload,
       };
 
-    case messageActionTypes.SET_TYPING_INDICATOR:
+    case messageActionTypes.SET_TYPING_INDICATOR: {
       const { userId, isTyping } = action.payload;
-
-      console.log('SET_TYPING_INDICATOR is called');
-      console.log('userId', userId);
-      console.log('isTyping', isTyping);
 
       return {
         ...state,
@@ -145,6 +199,7 @@ const messageReducer = (state = initialState, action) => {
           [userId]: isTyping,
         },
       };
+    }
 
     case messageActionTypes.RESET_TYPING_INDICATOR: {
       const { userId } = action.payload;

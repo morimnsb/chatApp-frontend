@@ -4,8 +4,9 @@ import useFetch from '../hooks/useFetch';
 import useChatWebSocket from '../hooks/useChatWebSocket';
 import { useDispatch } from 'react-redux';
 import {
-  updateLastMessage,
+  // updateLastMessage,
   resetTypingIndicator,
+  updateMessages,
 } from '../actions/messageActions';
 import { formatTime } from '../utils/formatTime';
 import { jwtDecode } from 'jwt-decode';
@@ -57,12 +58,11 @@ const ChatWindow = ({ roomId }) => {
   const [messageInput, setMessageInput] = useState('');
   const [error, setError] = useState(null);
   const [typing, setTyping] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState('Connecting');
   const dispatch = useDispatch();
 
   const accessToken = localStorage.getItem('access_token');
   const apiUrl = process.env.REACT_APP_API_URL;
-
-
 
   const currentUser = useMemo(() => {
     try {
@@ -94,8 +94,6 @@ const ChatWindow = ({ roomId }) => {
     fetchConfig,
   );
 
-
-
   const handleNotification = useCallback(
     (message) => {
       if (!message || !message.type) return;
@@ -104,15 +102,20 @@ const ChatWindow = ({ roomId }) => {
         case 'message':
           if (message.message) {
             setMessages((prevMessages) => {
-              if (!prevMessages.some((msg) => msg.id === message.message.id)) {
-                dispatch(
-                  updateLastMessage(message.message.sender_id, message.message),
-                );
+              const existingMessage = prevMessages.find(
+                (msg) => msg.id === message.message.id,
+              );
+
+              if (!existingMessage) {
                 return [...prevMessages, message.message];
               }
               return prevMessages;
             });
 
+            // Dispatch action to update messages
+            dispatch(updateMessages(message));
+
+            // Send read receipt confirmation for messages from others
             if (message.message.sender_id !== currentUser) {
               sendJsonMessage?.({
                 type: 'read_receipt_confirmation',
@@ -125,10 +128,10 @@ const ChatWindow = ({ roomId }) => {
         case 'typing_indicator':
           if (message.user_id) {
             setTyping(message.user_id);
-            setTimeout(
-              () => dispatch(resetTypingIndicator(message.user_id)),
-              5000,
-            );
+            setTimeout(() => {
+              dispatch(resetTypingIndicator(message.user_id));
+              setTyping(null); // Clear typing indicator after timeout
+            }, 5000);
           }
           break;
 
@@ -151,21 +154,22 @@ const ChatWindow = ({ roomId }) => {
     socketUrl,
     handleNotification,
   );
-
+  useEffect(() => {
+    if (readyState === 0) {
+      setConnectionStatus('Connecting...');
+    } else if (readyState === 1) {
+      setConnectionStatus('Connected');
+    } else if (readyState === 2) {
+      setConnectionStatus('Disconnecting...');
+    } else if (readyState === 3) {
+      setConnectionStatus('Disconnected');
+    }
+  }, [readyState]);
   useEffect(() => {
     if (roomId && fetchedMessages) {
       setMessages(fetchedMessages);
-
-      if (fetchedMessages.length > 0) {
-        dispatch(
-          updateLastMessage(
-            fetchedMessages[fetchedMessages.length - 1].id,
-            fetchedMessages[fetchedMessages.length - 1],
-          ),
-        );
-      }
     }
-  }, [fetchedMessages, roomId, dispatch]);
+  }, [fetchedMessages, roomId]);
 
   useEffect(() => {
     if (fetchError) {
@@ -181,7 +185,10 @@ const ChatWindow = ({ roomId }) => {
         setError('Message cannot be empty');
         return;
       }
-
+      if (readyState !== 1) {
+        setError('WebSocket connection is not open. Please try again later.');
+        return;
+      }
       try {
         sendJsonMessage?.({ type: 'chat_message', content: messageInput });
         setMessageInput('');
@@ -191,7 +198,7 @@ const ChatWindow = ({ roomId }) => {
         setError(`Error sending message. Details: ${error.message}`);
       }
     },
-    [messageInput, sendJsonMessage],
+    [messageInput, sendJsonMessage, readyState],
   );
 
   const handleInputChange = useCallback(
@@ -219,6 +226,8 @@ const ChatWindow = ({ roomId }) => {
       )}
 
       {error && <Alert variant="danger">{error}</Alert>}
+
+      <div className="connection-status">{connectionStatus}</div>
 
       <MessageList messages={messages} currentUser={currentUser} />
 
