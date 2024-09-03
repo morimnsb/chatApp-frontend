@@ -156,26 +156,6 @@ const messageReducer = (state = initialState, action) => {
       return state; // No change if the conversation doesn't exist
     }
 
-    // case messageActionTypes.UPDATE_LAST_MESSAGE: {
-    //   const { senderId, lastMessage } = action.payload;
-
-    //   const existingConversationIndex = findConversationIndex(
-    //     state.individualMessages,
-    //     senderId,
-    //   );
-
-    //   if (existingConversationIndex !== -1) {
-    //     return {
-    //       ...state,
-    //       individualMessages: state.individualMessages.map((conv, index) =>
-    //         index === existingConversationIndex
-    //           ? { ...conv, last_message: lastMessage }
-    //           : conv,
-    //       ),
-    //     };
-    //   }
-    //   return state; // No change if the conversation doesn't exist
-    // }
 
     case messageActionTypes.SET_LOADING:
       return {

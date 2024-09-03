@@ -1,10 +1,15 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from 'react';
 import { Form, Button, Spinner, Alert } from 'react-bootstrap';
 import useFetch from '../hooks/useFetch';
 import useChatWebSocket from '../hooks/useChatWebSocket';
 import { useDispatch } from 'react-redux';
 import {
-  // updateLastMessage,
   resetTypingIndicator,
   updateMessages,
 } from '../actions/messageActions';
@@ -38,7 +43,7 @@ const MessageBubble = React.memo(({ message, currentUser }) => (
   </div>
 ));
 
-const MessageList = ({ messages, currentUser }) => (
+const MessageList = React.memo(({ messages, currentUser }) => (
   <div className="messages">
     {messages.length > 0 ? (
       messages.map((msg) => (
@@ -48,7 +53,7 @@ const MessageList = ({ messages, currentUser }) => (
       <div className="no-messages">No messages yet</div>
     )}
   </div>
-);
+));
 
 const TypingIndicator = ({ typing }) =>
   typing && <div className="typing-indicator">User is typing...</div>;
@@ -58,8 +63,9 @@ const ChatWindow = ({ roomId }) => {
   const [messageInput, setMessageInput] = useState('');
   const [error, setError] = useState(null);
   const [typing, setTyping] = useState(null);
-  const [connectionStatus, setConnectionStatus] = useState('Connecting');
+  const [connectionStatus, setConnectionStatus] = useState('Connecting...');
   const dispatch = useDispatch();
+  const timeoutRef = useRef(null);
 
   const accessToken = localStorage.getItem('access_token');
   const apiUrl = process.env.REACT_APP_API_URL;
@@ -112,7 +118,6 @@ const ChatWindow = ({ roomId }) => {
               return prevMessages;
             });
 
-            // Dispatch action to update messages
             dispatch(updateMessages(message));
 
             // Send read receipt confirmation for messages from others
@@ -128,7 +133,8 @@ const ChatWindow = ({ roomId }) => {
         case 'typing_indicator':
           if (message.user_id) {
             setTyping(message.user_id);
-            setTimeout(() => {
+            clearTimeout(timeoutRef.current); // Clear existing timeout
+            timeoutRef.current = setTimeout(() => {
               dispatch(resetTypingIndicator(message.user_id));
               setTyping(null); // Clear typing indicator after timeout
             }, 5000);
@@ -154,6 +160,7 @@ const ChatWindow = ({ roomId }) => {
     socketUrl,
     handleNotification,
   );
+
   useEffect(() => {
     if (readyState === 0) {
       setConnectionStatus('Connecting...');
@@ -165,6 +172,7 @@ const ChatWindow = ({ roomId }) => {
       setConnectionStatus('Disconnected');
     }
   }, [readyState]);
+
   useEffect(() => {
     if (roomId && fetchedMessages) {
       setMessages(fetchedMessages);

@@ -82,15 +82,7 @@ export const clearUnreadCount = (conversationId) => ({
   payload: conversationId,
 });
 
-// /**
-//  * Updates the last message of a conversation.
-//  * @param {string} senderId - The ID of the sender.
-//  * @param {Object} lastMessage - The last message object.
-//  */
-// export const updateLastMessage = (senderId, lastMessage) => ({
-//   type: messageActionTypes.UPDATE_LAST_MESSAGE,
-//   payload: { senderId, lastMessage },
-// });
+
 
 /**
  * Sets the loading state in the Redux store.

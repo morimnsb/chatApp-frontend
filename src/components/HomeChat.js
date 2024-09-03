@@ -182,10 +182,6 @@ const HomeChat = () => {
           }, 5000);
           break;
 
-        // case 'update_last_message':
-        //   dispatch(updateLastMessage(msg.sender_id, msg.lastMessage));
-        //   break;
-
         default:
           console.error('Unknown message type:', type);
       }
@@ -262,7 +258,7 @@ const HomeChat = () => {
           ) : (
             <MessageList
               filteredIndividualMessages={filteredIndividualMessages}
-              filteredGroupMessages={filteredGroupMessages} // Pass filteredGroupMessages
+              filteredGroupMessages={filteredGroupMessages}
               handleSelectChat={handleSelectChat}
               selectedRoom={selectedRoom}
               currentUser={currentUser}
@@ -275,7 +271,7 @@ const HomeChat = () => {
             <ChatWindow
               roomId={selectedRoom}
               individualMessages={filteredIndividualMessages}
-              groupMessages={filteredGroupMessages} // Pass groupMessages
+              groupMessages={filteredGroupMessages}
             />
           )}
         </Col>

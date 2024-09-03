@@ -11,10 +11,12 @@ const MessageList = ({
   currentUser,
   handleSelectChat,
   selectedRoom,
-  typingIndicators = {}, // Provide default empty object
+  typingIndicators = {}, // Default value for typingIndicators to avoid undefined errors
 }) => {
+  // Generate room ID for individual chats
   const generateRoomId = useGenerateRoomId(currentUser, handleSelectChat);
 
+  // Memoize individual and group messages to prevent unnecessary re-renders
   const individualMessages = useMemo(
     () => filteredIndividualMessages,
     [filteredIndividualMessages],
@@ -24,6 +26,7 @@ const MessageList = ({
     [filteredGroupMessages],
   );
 
+  // Function to render typing indicator if the user is typing
   const renderTypingIndicator = (userId) => {
     const isTyping = typingIndicators[userId];
     return isTyping ? 'is typing...' : null;
