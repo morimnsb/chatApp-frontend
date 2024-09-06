@@ -1,198 +1,188 @@
+import { produce } from 'immer';
 import messageActionTypes from '../actions/messageActionTypes';
 
 const initialState = {
-  currentUser: null,
-  users: [],
-  individualMessages: [],
-  groupMessages: [],
+  currentUser: {},
+  users: {},
+  individualMessages: {},
+  groupMessages: {},
   selectedRoom: null,
-  loading: false,
-  error: null,
+  loadingStates: {
+    users: false,
+    messages: false,
+  },
+  errorStates: {
+    users: null,
+    messages: null,
+  },
   typingIndicators: {},
 };
 
-// Helper function to find the index of a conversation by sender ID
-const findConversationIndex = (conversations, senderId) => {
-
-
-  return conversations.findIndex((conv) => conv.id === senderId);
+const findOrCreateConversation = (
+  conversations,
+  conversationId,
+  defaultData,
+) => {
+  return conversations[conversationId] || defaultData;
 };
 
-const messageReducer = (state = initialState, action) => {
+const messageReducer = produce((draft, action) => {
   switch (action.type) {
     case messageActionTypes.SET_CURRENT_USER:
-      return {
-        ...state,
-        currentUser: action.payload,
-      };
+      if (!action.payload) {
+        draft.errorStates.users = 'Invalid user data';
+
+        break;
+      }
+      draft.currentUser = action.payload;
+
+      break;
 
     case messageActionTypes.SET_USERS:
-      return {
-        ...state,
-        users: action.payload,
-      };
+      if (!Array.isArray(action.payload)) {
+        draft.errorStates.users = 'Invalid users data';
+        break;
+      }
+      draft.users = action.payload.reduce((acc, user) => {
+        acc[user.id] = user;
+        return acc;
+      }, {});
+      break;
 
     case messageActionTypes.SET_INDIVIDUAL_MESSAGES:
-      return {
-        ...state,
-        individualMessages: Array.isArray(action.payload) ? action.payload : [],
+      if (!Array.isArray(action.payload)) {
+        draft.errorStates.messages = 'Invalid messages data';
+        break;
+      }
+      draft.individualMessages = {
+        ...draft.individualMessages,
+        ...action.payload.reduce((acc, msg) => {
+          acc[msg.id] = msg;
+          return acc;
+        }, {}),
       };
+      break;
 
     case messageActionTypes.SET_GROUP_MESSAGES:
-      return {
-        ...state,
-        groupMessages: Array.isArray(action.payload) ? action.payload : [],
+      if (!Array.isArray(action.payload)) {
+        draft.errorStates.messages = 'Invalid group messages data';
+        break;
+      }
+      draft.groupMessages = {
+        ...draft.groupMessages,
+        ...action.payload.reduce((acc, msg) => {
+          acc[msg.id] = msg;
+          return acc;
+        }, {}),
       };
+      break;
 
     case messageActionTypes.SELECT_ROOM:
-      return {
-        ...state,
-        selectedRoom: action.payload,
-      };
-
+      draft.selectedRoom = action.payload;
+      break;
+    
     case messageActionTypes.UPDATE_MESSAGES: {
-      const { message } = action.payload;
-      const msg = message.message;
-      const type = message.type;
-      const isNewMessageNotification = type === 'new_message_notification';
+  const { message } = action.payload;
+  const msg = message?.message;
+  const isNewMessageNotification =
+    message?.type === 'new_message_notification';
 
 
-      const senderId = msg.sender_id;
-      const receiverId = msg.receiver_id;
 
-      // Determine the ID to use for finding or creating the conversation
-      const conversationId =
-        state.currentUser === senderId ? receiverId : senderId;
+  if (!draft.currentUser || !draft.users || !msg) {
+    draft.errorStates.messages = 'User or message data missing';
+    console.error('User or message data missing:', {
+      currentUser: draft.currentUser,
+      users: draft.users,
+      msg,
+    });
+    break;
+  }
 
-      // Find the index of the existing conversation
-      const existingConversationIndex = findConversationIndex(
-        state.individualMessages,
-        conversationId,
-      );
+  const conversationId =
+    draft.currentUser === msg.sender_id
+      ? msg.receiver_id
+      : msg.sender_id;
 
-      // Handle the conversation update based on whether it exists or not
-      let newIndividualMessages;
-      if (existingConversationIndex !== -1) {
-        // Conversation exists, update the last_message and increment unread_count
-        newIndividualMessages = state.individualMessages.map((conv, index) =>
-          index === existingConversationIndex
-            ? {
-                ...conv,
-                last_message: msg,
-                unread_count: isNewMessageNotification
-                  ? (conv.unread_count || 0) + 1
-                  : conv.unread_count,
-              }
-            : conv,
-        );
 
-      } else {
-        // Conversation does not exist, create a new conversation
-        const newConversation = {
-          id: conversationId,
-          first_name: '', // Default to empty in case user is not found
-          last_message: msg,
-          unread_count: isNewMessageNotification ? 1 : 0,
-          typing: false,
-          is_online: false, // Default to false in case user is not found
-        };
 
-        // Find the user from the users array using conversationId
-        const user = state.users.find((user) => user.id === conversationId);
+  const conversation = findOrCreateConversation(
+    draft.individualMessages,
+    conversationId,
+    {
+      id: conversationId,
+      first_name: draft.users[conversationId]?.first_name || '',
+      last_message: null,
+      unread_count: 0,
+      typing: false,
+      is_online: draft.users[conversationId]?.is_online || false,
+    },
+  );
 
-        if (user) {
-          newConversation.first_name = user.first_name;
-          newConversation.is_online = user.is_online;
-        }
 
-        newIndividualMessages = [newConversation, ...state.individualMessages];
-      }
 
-      return {
-        ...state,
-        individualMessages: newIndividualMessages,
-      };
-    }
+  conversation.last_message = msg;
+  if (isNewMessageNotification) {
+    conversation.unread_count += 1;
+  }
+
+  draft.individualMessages[conversationId] = conversation;
+
+ 
+  break;
+}
+
 
     case messageActionTypes.UPDATE_STATUS: {
       const { senderId, status } = action.payload;
-
-      const existingConversationIndex = findConversationIndex(
-        state.individualMessages,
-        senderId,
-      );
-
-      if (existingConversationIndex !== -1) {
-        return {
-          ...state,
-          individualMessages: state.individualMessages.map((conv, index) =>
-            index === existingConversationIndex
-              ? { ...conv, is_online: status }
-              : conv,
-          ),
-        };
+      if (draft.individualMessages[senderId]) {
+        draft.individualMessages[senderId].is_online = status;
       }
-      return state; // No change if the conversation doesn't exist
+      break;
     }
 
     case messageActionTypes.CLEAR_UNREAD_COUNT: {
       const conversationId = action.payload;
-
-      const existingConversationIndex = findConversationIndex(
-        state.individualMessages,
-        conversationId,
-      );
-
-      if (existingConversationIndex !== -1) {
-        return {
-          ...state,
-          individualMessages: state.individualMessages.map((conv, index) =>
-            index === existingConversationIndex
-              ? { ...conv, unread_count: 0 }
-              : conv,
-          ),
-        };
+      if (draft.individualMessages[conversationId]) {
+        draft.individualMessages[conversationId].unread_count = 0;
       }
-      return state; // No change if the conversation doesn't exist
+      break;
     }
 
-
     case messageActionTypes.SET_LOADING:
-      return {
-        ...state,
-        loading: action.payload,
-      };
+      draft.loadingStates[action.payload.type] = action.payload.status;
+      break;
 
     case messageActionTypes.SET_ERROR:
-      return {
-        ...state,
-        error: action.payload,
-      };
+      draft.errorStates[action.payload.type] =
+        action.payload.errorType === 'network'
+          ? 'Network error. Please try again.'
+          : 'Unknown error occurred.';
+      break;
 
     case messageActionTypes.SET_TYPING_INDICATOR: {
       const { userId, isTyping } = action.payload;
-
-      return {
-        ...state,
-        typingIndicators: {
-          ...state.typingIndicators,
-          [userId]: isTyping,
-        },
-      };
+      draft.typingIndicators[userId] = isTyping;
+      break;
     }
 
     case messageActionTypes.RESET_TYPING_INDICATOR: {
       const { userId } = action.payload;
-      const { [userId]: _, ...rest } = state.typingIndicators;
-      return {
-        ...state,
-        typingIndicators: rest,
-      };
+      delete draft.typingIndicators[userId];
+      break;
+    }
+
+    case messageActionTypes.DELETE_MESSAGE: {
+      const { messageId, conversationId } = action.payload;
+      if (draft.individualMessages[conversationId]) {
+        delete draft.individualMessages[conversationId][messageId];
+      }
+      break;
     }
 
     default:
-      return state;
+      break;
   }
-};
+}, initialState);
 
 export default messageReducer;

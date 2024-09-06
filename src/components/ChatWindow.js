@@ -16,13 +16,14 @@ import {
 import { formatTime } from '../utils/formatTime';
 import { jwtDecode } from 'jwt-decode';
 import './ChatWindow.css';
+import profilephoto1 from '../assets/images/message/profilephoto1.png';
 
 const MessageBubble = React.memo(({ message, currentUser }) => (
   <div className="message-bubble">
     {message.sender_first_name && (
       <div className="chat-header-details">
         <img
-          src={message.photo || 'default-image.png'}
+          src={message.photo || profilephoto1}
           alt={message.sender_first_name}
           className="chat-header-img"
         />
