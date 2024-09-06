@@ -39,8 +39,7 @@ import {
   selectError,
   selectTypingIndicators,
 } from '../selectors/messageSelectors';
-import { API_BASE_URL } from '../config';
-
+const apiUrl = process.env.REACT_APP_API_URL;
 const HomeChat = () => {
   const dispatch = useDispatch();
 
@@ -82,21 +81,21 @@ const HomeChat = () => {
     loading: loadingIndividual,
     error: errorIndividual,
     retry: retryIndividual,
-  } = useFetch(`${API_BASE_URL}/chatMeetUp/conversations/`, fetchConfig);
+  } = useFetch(`${apiUrl}/chatMeetUp/conversations/`, fetchConfig);
 
   const {
     data: fetchedGroupMessages = [],
     loading: loadingGroup,
     error: errorGroup,
     retry: retryGroup,
-  } = useFetch(`${API_BASE_URL}/chatMeetUp/chatrooms/`, fetchConfig);
+  } = useFetch(`${apiUrl}/chatMeetUp/chatrooms/`, fetchConfig);
 
   const {
     data: users = [],
     loading: loadingUsers,
     error: errorUsers,
     retry: retryUsers,
-  } = useFetch(`${API_BASE_URL}/api/auth/users`, fetchConfig);
+  } = useFetch(`${apiUrl}/api/auth/users`, fetchConfig);
 
   // Set current user in Redux state
   useEffect(() => {
@@ -218,7 +217,7 @@ const HomeChat = () => {
   // Handle friendship request
   const handleFriendshipRequest = async (userId) => {
     try {
-      const response = await fetch(`${API_BASE_URL}/chatMeetUp/friendship/`, {
+      const response = await fetch(`${apiUrl}/chatMeetUp/friendship/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
