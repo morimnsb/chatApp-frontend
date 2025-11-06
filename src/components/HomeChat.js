@@ -1,37 +1,23 @@
-import React, {
-  useState,
-  useCallback,
-  useMemo,
-  useEffect,
-  useRef,
-} from 'react';
+// src/components/HomeChat.js
+import React, { useState, useMemo, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { Container, Row, Col, Spinner, Alert } from 'react-bootstrap';
 import { ToastContainer, toast } from 'react-toastify';
-import { jwtDecode } from 'jwt-decode';
-import debounce from 'lodash.debounce';
-import useChatWebSocket from '../hooks/useChatWebSocket';
-import useFetch from '../hooks/useFetch';
-import MessageList from './MessageList';
-import ChatWindow from './ChatWindow';
-import Header from './Header';
-import UserModal from './UserModal';
 import 'react-toastify/dist/ReactToastify.css';
 import './HomeChat.css';
-import {
-  setCurrentUser,
-  setUsers,
-  setIndividualMessages,
-  setGroupMessages,
-  selectRoom,
-  updateMessages,
-  setLoading,
-  setError,
-  setTypingIndicator,
-  clearUnreadCount,
-  resetTypingIndicator,
-  updateStatus,
-} from '../actions/messageActions';
+
+import Header from './Header';
+import MessageList from './MessageList';
+import ChatWindow from './ChatWindow';
+import UserModal from './UserModal';
+import BackendPicker from './BackendPicker';
+
+import { useBackendChoice, buildEndpoints } from '../backend/choice';
+import useCurrentUser from '../hooks/useCurrentUser';
+import useChatData from '../hooks/useChatData';
+import useReverbEcho from '../hooks/useReverbEcho';
+import useUsers from '../hooks/useUsers';
+
 import {
   selectIndividualMessages,
   selectGroupMessages,
@@ -39,238 +25,141 @@ import {
   selectError,
   selectTypingIndicators,
 } from '../selectors/messageSelectors';
-const apiUrl = process.env.REACT_APP_API_URL;
+
+import { clearUnreadCount, selectRoom } from '../actions/messageActions';
+
 const HomeChat = () => {
   const dispatch = useDispatch();
 
-  // Selectors using reselect
-  const individualMessages = useSelector(selectIndividualMessages);
-  const groupMessages = useSelector(selectGroupMessages);
+  // Redux selects
+  const individualMessagesMap = useSelector(selectIndividualMessages);
+  const groupMessagesMap = useSelector(selectGroupMessages);
   const loading = useSelector(selectLoading);
   const error = useSelector(selectError);
   const typingIndicators = useSelector(selectTypingIndicators);
 
+  // Local UI state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
-  const typingTimeouts = useRef({});
-  const accessToken = localStorage.getItem('access_token');
 
-  // Decode current user from JWT token
-  const currentUser = useMemo(() => {
-    if (!accessToken) return null;
-    try {
-      return jwtDecode(accessToken)?.user_id || null;
-    } catch (error) {
-      console.error('Error decoding access token:', error);
-      return null;
-    }
-  }, [accessToken]);
-
-  // Fetch config with authorization header
-  const fetchConfig = useMemo(
-    () => ({
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }),
-    [accessToken],
+  // Backend choice
+  const { backendChoice, effectiveKind, handleChangeBackend } =
+    useBackendChoice();
+  const endpoints = useMemo(
+    () => buildEndpoints(effectiveKind),
+    [effectiveKind],
   );
 
-  // Fetch messages and users data
-  const {
-    data: fetchedIndividualMessages = { partners: [] },
-    loading: loadingIndividual,
-    error: errorIndividual,
-    retry: retryIndividual,
-  } = useFetch(`${apiUrl}/chatMeetUp/conversations/`, fetchConfig);
+  // Auth & current user
+  const accessToken = localStorage.getItem('access_token') || '';
+  useCurrentUser({ accessToken, effectiveKind, endpoints });
+  const currentUser =
+    useSelector((s) => s.auth?.currentUser ?? s.message?.currentUser) ?? null;
 
-  const {
-    data: fetchedGroupMessages = [],
-    loading: loadingGroup,
-    error: errorGroup,
-    retry: retryGroup,
-  } = useFetch(`${apiUrl}/chatMeetUp/chatrooms/`, fetchConfig);
+  // Fetch users (and filter out current user)
+  const { loadingUsers, errorUsers, retryUsers, filteredUsers } = useUsers({
+    endpoints,
+    accessToken,
+    currentUser,
+  });
 
-  const {
-    data: users = [],
-    loading: loadingUsers,
-    error: errorUsers,
-    retry: retryUsers,
-  } = useFetch(`${apiUrl}/api/auth/users`, fetchConfig);
+  // Data fetching for conversations/rooms
+  const { retryRooms, retryUsers: retryRoomsUsers } = useChatData({
+    endpoints,
+    accessToken,
+  });
 
-  // Set current user in Redux state
-  useEffect(() => {
-    if (currentUser) {
-      dispatch(setCurrentUser(currentUser));
-    }
-  }, [currentUser, dispatch]);
+  // Echo/Reverb (only when effectiveKind === 'reverb')
+  useReverbEcho({ effectiveKind, accessToken });
 
-  // Handle loading, error, and fetched data
-  useEffect(() => {
-    if (fetchedIndividualMessages && fetchedIndividualMessages.partners) {
-    
-      dispatch(setIndividualMessages(fetchedIndividualMessages.partners));
-    }
+  // Derived lists
+  const individualArray = useMemo(
+    () => Object.values(individualMessagesMap || {}),
+    [individualMessagesMap],
+  );
+  const groupArray = useMemo(
+    () => Object.values(groupMessagesMap || {}),
+    [groupMessagesMap],
+  );
 
-    dispatch(setLoading(loadingIndividual || loadingGroup || loadingUsers));
-    dispatch(setGroupMessages(fetchedGroupMessages));
-    dispatch(setUsers(users));
-
-    if (errorIndividual || errorGroup || errorUsers) {
-      dispatch(setError(errorIndividual || errorGroup || errorUsers));
-    }
-  }, [
-    fetchedIndividualMessages,
-    fetchedGroupMessages,
-    users,
-    loadingIndividual,
-    loadingGroup,
-    loadingUsers,
-    errorIndividual,
-    errorGroup,
-    errorUsers,
-    dispatch,
-  ]);
-
-
-  // Filter messages based on search query
   const filteredIndividualMessages = useMemo(() => {
-    return individualMessages.filter((user) =>
-      user.first_name?.toLowerCase().includes(searchQuery.toLowerCase()),
+    const q = searchQuery.toLowerCase();
+    return individualArray.filter((u) =>
+      (u.first_name || '').toLowerCase().includes(q),
     );
-  }, [individualMessages, searchQuery]);
+  }, [individualArray, searchQuery]);
 
   const filteredGroupMessages = useMemo(() => {
-    return groupMessages.filter((room) =>
-      room.name?.toLowerCase().includes(searchQuery.toLowerCase()),
-    );
-  }, [groupMessages, searchQuery]);
+    const q = searchQuery.toLowerCase();
+    return groupArray.filter((r) => (r.name || '').toLowerCase().includes(q));
+  }, [groupArray, searchQuery]);
 
-  // Handle typing indicators and notifications
-  const handleNotification = useCallback(
-    (message) => {
-      const { type, message: msg } = message;
-
-      switch (type) {
-        case 'status_notify':
-          toast.info(`User ${msg.user_first_name} is now ${msg.status}.`);
-          dispatch(updateStatus(msg.sender_id, msg.status));
-          break;
-
-        case 'new_message_notification':
-          toast.info(`New message from ${msg.sender_first_name}.`);
-          dispatch(updateMessages(message));
-          break;
-
-        case 'typing_indicator': {
-          const user_id = msg.sender_id;
-
-          if (!user_id) {
-            console.error('User ID is missing in typing indicator message');
-            return;
-          }
-
-          // Dispatch the action to set the typing indicator
-          dispatch(setTypingIndicator({ userId: user_id, isTyping: true }));
-
-          // Set a timeout to automatically reset the typing indicator after 5 seconds
-          setTimeout(() => {
-            dispatch(resetTypingIndicator(user_id));
-          }, 3000);
-
-          break;
-        }
-
-        default:
-          console.error('Unknown message type:', type);
-      }
-    },
-    [dispatch], // Ensure that dispatch is in the dependency array
-  );
-
-
-  useChatWebSocket(
-    `ws://localhost:8000/ws/chat/?token=${accessToken}`,
-    handleNotification,
-    !!accessToken,
-  );
-
-  // Cleanup typing timeouts when the component unmounts
-  useEffect(() => {
-    const timeouts = typingTimeouts.current;
-
-    return () => {
-      Object.values(timeouts).forEach(clearTimeout);
-    };
-  }, []);
-
-
-  // Handle selecting chat room
+  // Select a chat
   const handleSelectChat = useCallback(
     (roomId, receiverId) => {
       setSelectedRoom(roomId);
       dispatch(selectRoom(roomId));
-      dispatch(clearUnreadCount(receiverId));
+      if (receiverId) dispatch(clearUnreadCount(receiverId));
     },
     [dispatch],
   );
 
-  // Handle friendship request
-  const handleFriendshipRequest = async (userId) => {
-    try {
-      const response = await fetch(`${apiUrl}/chatMeetUp/friendship/`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ to_user_id: userId }),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Friendship request failed');
+  // Friendship request
+  const handleFriendshipRequest = useCallback(
+    async (userId) => {
+      try {
+        const resp = await fetch(endpoints.friend, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ to_user_id: userId }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          throw new Error(
+            data?.error || `Friendship request failed (${resp.status})`,
+          );
+        }
+        toast.success(data?.message || 'Friendship request sent!');
+      } catch (e) {
+        toast.error(e.message || 'Error sending friendship request');
       }
-
-      const result = await response.json();
-      toast.success(result.message || 'Friendship request sent successfully!');
-    } catch (error) {
-      console.error('Friendship request error:', error);
-      toast.error(`Error: ${error.message || 'An error occurred.'}`);
-    }
-  };
-
-  // Retry fetching data on failure
-  const retryFetch = useCallback(() => {
-    dispatch(setLoading(true));
-    retryIndividual();
-    retryGroup();
-    retryUsers();
-  }, [dispatch, retryIndividual, retryGroup, retryUsers]);
-
-  // Filter users to exclude the current user
-  const filteredUsers = useMemo(
-    () => users?.filter((user) => user.id !== currentUser),
-    [users, currentUser],
+    },
+    [endpoints.friend, accessToken],
   );
 
-  // Debounced search
-  const handleSearch = debounce((value) => setSearchQuery(value), 300);
-
+  // Retry button (rooms + users)
+  const retryFetch = useCallback(() => {
+    retryRooms();
+    retryRoomsUsers?.();
+    retryUsers();
+  }, [retryRooms, retryRoomsUsers, retryUsers]);
 
   return (
     <Container fluid className="messages-container">
+      <BackendPicker value={backendChoice} onChange={handleChangeBackend} />
+
       <Header
         searchQuery={searchQuery}
-        setSearchQuery={handleSearch}
+        setSearchQuery={setSearchQuery}
         setShowUserDropdown={setShowUserDropdown}
       />
+
+      <div style={{ fontSize: 12, opacity: 0.7, padding: '4px 8px' }}>
+        Effective backend: <b>{endpoints.kind}</b> · WS mode:{' '}
+        <b>{effectiveKind === 'reverb' ? 'Echo/Reverb' : 'Raw/Off'}</b>
+      </div>
+
       <Row>
         <Col md={4} className="messages-list">
           {loading ? (
             <Spinner animation="border" variant="primary" />
           ) : error ? (
             <Alert variant="danger">
-              Error loading messages.{' '}
+              Error loading data.{' '}
               <button className="btn btn-link" onClick={retryFetch}>
                 Retry
               </button>
@@ -281,7 +170,6 @@ const HomeChat = () => {
               filteredGroupMessages={filteredGroupMessages}
               handleSelectChat={handleSelectChat}
               selectedRoom={selectedRoom}
-              currentUser={currentUser}
               typingIndicators={typingIndicators}
             />
           )}
@@ -292,10 +180,13 @@ const HomeChat = () => {
               roomId={selectedRoom}
               individualMessages={filteredIndividualMessages}
               groupMessages={filteredGroupMessages}
+              endpoints={endpoints} // ✅
+              accessToken={accessToken} // ✅
             />
           )}
         </Col>
       </Row>
+
       <UserModal
         showUserDropdown={showUserDropdown}
         setShowUserDropdown={setShowUserDropdown}
@@ -305,7 +196,11 @@ const HomeChat = () => {
         filteredUsers={filteredUsers}
         handleSelectChat={handleSelectChat}
         handleFriendshipRequest={handleFriendshipRequest}
+        endpoints={endpoints}
+        effectiveKind={effectiveKind}
+        accessToken={accessToken}
       />
+
       <ToastContainer />
     </Container>
   );

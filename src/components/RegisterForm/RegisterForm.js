@@ -42,6 +42,7 @@ const RegisterForm = () => {
         );
 
         if (res.status === 201) {
+          console.log(res)
           navigate('/verify-email');
           toast.success('Registration successful. Please verify your email.');
         }

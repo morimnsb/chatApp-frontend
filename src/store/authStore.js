@@ -1,50 +1,42 @@
-import { createSlice } from "@reduxjs/toolkit";
-import { jwtDecode } from "jwt-decode";
+import { createSlice } from '@reduxjs/toolkit';
 
 const initialState = {
   isLoggedIn: false,
   loading: false,
-  user: null,
-  token: null,
-  currentUserId: null,
+  user: null, // { full_name: "..." }
+  token: null, // Sanctum token string
+  refresh_token: null, // random string we generated
 };
 
 const authSlice = createSlice({
-  name: "auth",
+  name: 'auth',
   initialState,
   reducers: {
+    loading(state, action) {
+      state.loading = action.payload;
+    },
     login(state, action) {
+      const { user, token, refresh_token } = action.payload;
+
+      // IMPORTANT CHANGE:
+      // no jwtDecode here, Sanctum is not JWT.
+
       state.isLoggedIn = true;
-      state.user = action.payload.user;
-      state.token = action.payload.token;
-      // Ensure the user ID is correctly extracted from the decoded token
-      const decoded = jwtDecode(action.payload.token);
-      state.currentUserId = decoded.user_id;
+      state.loading = false;
+
+      state.user = user || null;
+      state.token = token || null;
+      state.refresh_token = refresh_token || null;
     },
     logout(state) {
       state.isLoggedIn = false;
+      state.loading = false;
       state.user = null;
       state.token = null;
-      state.currentUserId = null;
-    },
-    setLoading(state, action) {
-      state.loading = action.payload;
+      state.refresh_token = null;
     },
   },
 });
 
-export const { login, logout, setLoading } = authSlice.actions;
-
-export const selectToken = (state) => state.auth.token;
-
-export const selectUserId = (state) => {
-  if (state.auth.token) {
-    const decoded = jwtDecode(state.auth.token);
-    return decoded.user_id;
-  }
-  return null;
-};
-
-export const selectCurrentUserId = (state) => state.auth.currentUserId;
-
+export const { login } = authSlice.actions;
 export default authSlice.reducer;

@@ -1,31 +1,86 @@
-import { useState, useEffect, useMemo } from 'react';
+// src/hooks/useFetch.js
+import { useEffect, useRef, useState, useCallback } from 'react';
 import axios from 'axios';
 
-const useFetch = (url, config) => {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+// اگر axiosInstance سفارشی داری، می‌توانی به جای axios از آن استفاده کنی.
+// import axiosInstance from '../services/axiosInstance';
+
+const ABSOLUTE_RE = /^(?:https?:)?\/\//i;
+
+function isAbsoluteUrl(url) {
+  return ABSOLUTE_RE.test(String(url || ''));
+}
+
+export default function useFetch(path, config = {}) {
+  const [data, setData] = useState(config.initialData ?? null);
+  const [loading, setLoading] = useState(Boolean(config.immediate ?? true));
   const [error, setError] = useState(null);
 
-  // Using useMemo to memoize the config object
-  const memoizedConfig = useMemo(() => config, [config]);
+  const lastUrlRef = useRef(null);
+  const abortRef = useRef(null);
+
+  const doFetch = useCallback(async () => {
+    if (!path) return;
+
+    // اگر قبلاً درخواست در حال اجراست، لغوش کن
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      // تشخیص URL مطلق
+      const url = isAbsoluteUrl(path) ? path : path.replace(/^\/+/, '/');
+
+      // اگر از axiosInstance با baseURL استفاده می‌کنی، این‌جا جایگزین axios کن:
+      const resp = await axios.request({
+        url,
+        method: config.method || 'GET',
+        headers: config.headers,
+        data: config.body,
+        signal: controller.signal,
+        // با axios ساده، baseURL لحاظ نمی‌شود مگر خودت بدهی.
+        // اگر می‌خواهی baseURL سراسری داشته باشی، یک axiosInstance بساز و این‌جا استفاده کن.
+      });
+
+      setData(resp?.data ?? null);
+      setLoading(false);
+      setError(null);
+      lastUrlRef.current = url;
+    } catch (err) {
+      if (controller.signal.aborted) return; // لغو شد
+
+      // لاگ مفید برای دیباگ
+      // eslint-disable-next-line no-console
+      console.error('[useFetch NETWORK/HTTP ERROR]', {
+        path,
+        normalized: lastUrlRef.current || path,
+        err,
+      });
+
+      setError(err);
+      setLoading(false);
+    } finally {
+      abortRef.current = null;
+    }
+  }, [path, config.method, config.headers, config.body]);
 
   useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      try {
-        const response = await axios.get(url, memoizedConfig);
-        setData(response.data);
-      } catch (error) {
-        setError(error);
-      } finally {
-        setLoading(false);
-      }
+    if (config.immediate === false) return;
+    doFetch();
+    // cleanup abort on unmount
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
     };
+  }, [doFetch, config.immediate]);
 
-    fetchData();
-  }, [url, memoizedConfig]); // Memoized config is included as a dependency
+  const retry = useCallback(() => {
+    doFetch();
+  }, [doFetch]);
 
-  return { data, loading, error };
-};
-
-export default useFetch;
+  return { data, loading, error, retry };
+}

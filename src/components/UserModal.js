@@ -1,6 +1,7 @@
+// src/components/UserModal.js
 import React, { memo } from 'react';
 import { Modal, ListGroup, Spinner, Alert, Button } from 'react-bootstrap';
-import useGenerateRoomId from '../hooks/useGenerateRoomId';
+import useOpenOrCreatePrivateRoom from '../hooks/useOpenOrCreatePrivateRoom';
 
 const UserModal = ({
   showUserDropdown,
@@ -11,14 +12,22 @@ const UserModal = ({
   currentUser,
   handleSelectChat,
   handleFriendshipRequest,
+  endpoints,
+  effectiveKind,
+  accessToken,
 }) => {
-  const generateRoomId = useGenerateRoomId(currentUser, handleSelectChat);
+  const openOrCreate = useOpenOrCreatePrivateRoom({
+    endpoints,
+    effectiveKind,
+    accessToken,
+    handleSelectChat,
+  });
 
   const handleModalClose = () => setShowUserDropdown(false);
 
-  const handleUserClick = (userId) => {
-    generateRoomId(userId);
-    handleModalClose(); // Close the modal after user selection
+  const handleUserClick = async (userId) => {
+    await openOrCreate(userId, 'Hi!'); // می‌تونی متنی ندی
+    handleModalClose();
   };
 
   return (
@@ -59,7 +68,7 @@ const UserModal = ({
                     onClick={(e) => {
                       e.stopPropagation();
                       handleFriendshipRequest(user.id);
-                      handleModalClose(); // Close the modal after adding a friend
+                      handleModalClose();
                     }}
                   >
                     Add Friend
