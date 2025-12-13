@@ -1,9 +1,9 @@
 // src/hooks/useUsers.js
 import { useMemo, useEffect } from 'react';
 import { useDispatch } from 'react-redux';
-import useFetch from '../hooks/useFetch';
-import { setUsers, setLoading, setError } from '../actions/messageActions';
-import { toErrorMessage } from '../utils/errors';
+import useFetch from '@/hooks/useFetch';
+import { setUsers, setLoading, setError } from '@/actions/messageActions';
+import { toErrorMessage } from '@/utils/errors';
 
 /**
  * Fetch users and wire to Redux.
@@ -63,3 +63,4 @@ export default function useUsers({ endpoints, accessToken, currentUser }) {
     filteredUsers,
   };
 }
+

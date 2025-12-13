@@ -1,15 +1,14 @@
 // src/hooks/useChatData.js
 import { useEffect, useMemo } from 'react';
-import useFetch from '../hooks/useFetch';
+import useFetch from '@/hooks/useFetch';
 import { useDispatch } from 'react-redux';
 import {
   setLoading,
-  setUsers,
   setGroupMessages,
   setIndividualMessages,
   setError,
-} from '../actions/messageActions';
-import { toErrorMessage } from '../utils/errors';
+} from '@/actions/messageActions';
+import { toErrorMessage } from '@/utils/errors';
 
 export default function useChatData({ endpoints, accessToken }) {
   const dispatch = useDispatch();
@@ -19,39 +18,75 @@ export default function useChatData({ endpoints, accessToken }) {
     [accessToken],
   );
 
-  const { data: convos = { partners: [] }, loading: loadingConvos } = useFetch(
-    endpoints.convos,
-    fetchConfig,
-  );
-
+  // 🔹 لیست DM / partners (legacy + API جدید)
   const {
-    data: rooms = [],
+    data: convos,
+    loading: loadingConvos,
+    error: errorConvos,
+    retry: retryConvos,
+  } = useFetch(endpoints.convos, fetchConfig);
+
+  // 🔹 لیست rooms (برای گروه‌ها یا بک‌اندهای قدیمی)
+  const {
+    data: roomsRaw,
     loading: loadingRooms,
     error: errorRooms,
     retry: retryRooms,
   } = useFetch(endpoints.rooms, fetchConfig);
 
-  const {
-    data: users = [],
-    loading: loadingUsers,
-    error: errorUsers,
-    retry: retryUsers,
-  } = useFetch(endpoints.users, fetchConfig);
+  // --- نرمال‌سازی خروجی conversations ---
+  const dmPartners = useMemo(() => {
+    if (!convos) return [];
 
+    // API جدید: { partners: [...] }
+    if (Array.isArray(convos.partners)) return convos.partners;
+
+    // بک‌اندهایی که مستقیم آرایه برمی‌گردونن
+    if (Array.isArray(convos)) return convos;
+
+    // فرم‌های دیگه: { results: [...] } یا { data: [...] }
+    if (Array.isArray(convos.results)) return convos.results;
+    if (Array.isArray(convos.data)) return convos.data;
+
+    return [];
+  }, [convos]);
+
+  const groupFromConvos = useMemo(() => {
+    if (!convos) return [];
+    if (Array.isArray(convos.groups)) return convos.groups;
+    return [];
+  }, [convos]);
+
+  // --- نرمال‌سازی rooms ---
+  const normRooms = useMemo(() => {
+    if (Array.isArray(roomsRaw)) return roomsRaw;
+    if (Array.isArray(roomsRaw?.results)) return roomsRaw.results;
+    if (Array.isArray(roomsRaw?.data)) return roomsRaw.data;
+    return [];
+  }, [roomsRaw]);
+
+  // --- side effect: sync با Redux ---
   useEffect(() => {
-    if (convos?.partners) dispatch(setIndividualMessages(convos.partners));
-    dispatch(setGroupMessages(Array.isArray(rooms) ? rooms : []));
+    // ✅ DM ها (لیست گفتگوهای فردی)
+    if (dmPartners) {
+      dispatch(setIndividualMessages(dmPartners));
+    }
 
-    const list = Array.isArray(users)
-      ? users
-      : Array.isArray(users?.results)
-      ? users.results
-      : [];
-    dispatch(setUsers(list));
+    // ✅ گروه‌ها:
+    // اگر API جدید groups دارد، از آن استفاده کن؛
+    // وگرنه fallback به rooms قدیمی
+    const groupsSource =
+      groupFromConvos && groupFromConvos.length > 0
+        ? groupFromConvos
+        : normRooms;
 
-    dispatch(setLoading(loadingConvos || loadingRooms || loadingUsers));
+    dispatch(setGroupMessages(groupsSource));
 
-    const err = errorRooms || errorUsers;
+    // ✅ وضعیت loading کلی
+    dispatch(setLoading(loadingConvos || loadingRooms));
+
+    // ✅ وضعیت error کلی
+    const err = errorConvos || errorRooms;
     if (err) {
       dispatch(
         setError({
@@ -64,19 +99,19 @@ export default function useChatData({ endpoints, accessToken }) {
       dispatch(setError(null));
     }
   }, [
-    convos,
-    rooms,
-    users,
+    dmPartners,
+    groupFromConvos,
+    normRooms,
     loadingConvos,
     loadingRooms,
-    loadingUsers,
+    errorConvos,
     errorRooms,
-    errorUsers,
     dispatch,
   ]);
 
   return {
     retryRooms,
-    retryUsers,
+    retryUsers: undefined, // برای سازگاری با HomeChat که retryRoomsUsers?.() صدا می‌زند
+    retryConvos,
   };
 }

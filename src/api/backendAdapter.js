@@ -1,23 +1,30 @@
 // src/api/backendAdapter.js
 // لایه‌ی یکپارچه‌سازی مسیرها برای Laravel/Django (+ حالت Laravel Reverb)
 
-const BACKEND = (process.env.REACT_APP_BACKEND || 'laravel').toLowerCase();
-const API =
-  process.env.REACT_APP_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
+// BACKEND: 'laravel' | 'django' | 'laravel_reverb'
+const BACKEND = (import.meta.env.VITE_BACKEND || 'laravel').toLowerCase();
 
+// API base: انتهای اسلش‌های اضافه حذف می‌شود
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(
+  /\/+$/,
+  '',
+);
+
+// هدر اختیاری Bearer (برای APIهایی که توکن می‌خواهند)
 function authHeader(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// WebSocket base (برای سرور WS مستقیم؛ در Reverb عملاً استفاده نمی‌شود)
 const commonWsBase =
-  process.env.REACT_APP_WS_URL || 'ws://localhost:8000/ws/chat/';
+  import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/chat/';
 
 // --- پروفایل هر بک‌اند ---
 const profiles = {
   laravel: {
     me: `${API}/api/auth/me`,
     users: `${API}/api/auth/users`,
-    convos: `${API}/chatMeetUp/conversations/`, // ممکنه 404 بده؛ پایین هندل می‌کنیم
+    convos: `${API}/chatMeetUp/conversations`, // ممکنه 404 بده؛ پایین هندل می‌کنیم
     rooms: `${API}/chatMeetUp/chatrooms/`,
     friend: `${API}/chatMeetUp/friendship/`,
     wsBase: commonWsBase,
@@ -36,18 +43,19 @@ const profiles = {
   laravel_reverb: {
     me: `${API}/api/auth/me`,
     users: `${API}/api/auth/users`,
-    convos: `${API}/chatMeetUp/conversations/`,
+    convos: `${API}/chatMeetUp/conversations`,
     rooms: `${API}/chatMeetUp/chatrooms/`,
     friend: `${API}/chatMeetUp/friendship/`,
-    // wsBase عملاً استفاده نمی‌شود؛ از pusher-js استفاده می‌کنیم
+    // wsBase عملاً استفاده نمی‌شود؛ از pusher-js/reverb استفاده می‌کنیم
     wsBase: null,
     kind: 'laravel_reverb',
     reverb: {
-      appKey: process.env.REACT_APP_REVERB_APP_KEY || 'app-key',
-      host: process.env.REACT_APP_REVERB_HOST || '127.0.0.1',
-      port: Number(process.env.REACT_APP_REVERB_PORT || 8080),
+      appKey: import.meta.env.VITE_REVERB_APP_KEY || 'app-key',
+      host: import.meta.env.VITE_REVERB_HOST || '127.0.0.1',
+      port: Number(import.meta.env.VITE_REVERB_PORT ?? 8080),
       forceTLS:
-        (process.env.REACT_APP_REVERB_TLS || 'false').toLowerCase() === 'true',
+        String(import.meta.env.VITE_REVERB_TLS || 'false').toLowerCase() ===
+        'true',
     },
   },
 };
@@ -64,6 +72,8 @@ async function request(url, token, opts = {}) {
       ...authHeader(token),
       ...(opts.headers || {}),
     },
+    // اگر با کوکی/سشن کار می‌کنی، این را فعال کن:
+    // credentials: 'include',
   });
 
   let bodyText = '';
@@ -91,11 +101,13 @@ function normalizeRooms(raw) {
   }
   return [];
 }
+
 function normalizeConversations(raw) {
   if (raw?.partners && Array.isArray(raw.partners)) return raw;
   if (Array.isArray(raw)) return { partners: raw };
   return { partners: [] };
 }
+
 function normalizeUsers(raw) {
   if (Array.isArray(raw)) return raw;
   if (Array.isArray(raw?.results)) return raw.results;

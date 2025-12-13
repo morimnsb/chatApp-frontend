@@ -1,10 +1,9 @@
 // src/hooks/useOpenOrCreatePrivateRoom.js
-import { useCallback, useState } from 'react';
-import axios from 'axios';
+import { useState, useCallback } from 'react';
 
 export default function useOpenOrCreatePrivateRoom({
   endpoints,
-  effectiveKind,
+  effectiveKind, // فعلاً استفاده نمی‌کنیم، ولی آینده شاید برای Reverb استفاده کنیم
   accessToken,
   handleSelectChat,
 }) {
@@ -12,96 +11,70 @@ export default function useOpenOrCreatePrivateRoom({
   const [lastError, setLastError] = useState(null);
 
   const openOrCreate = useCallback(
-    async (recipientId, content = 'Hi! useOpen') => {
-      setLastError(null);
-
-      // 1) اعتبارسنجی ورودی
-      const rid = Number(recipientId);
-      if (!endpoints?.firstMessage) {
-        const e = new Error('firstMessage endpoint تعریف نشده است.');
-        setLastError(e);
-        return null;
+    async (recipientId, content = '') => {
+      if (!recipientId) {
+        console.warn('[DM] no recipientId provided');
+        return;
       }
       if (!accessToken) {
-        const e = new Error('توکن احراز هویت وجود ندارد.');
-        setLastError(e);
-        return null;
+        console.warn('[DM] no accessToken, aborting make-contact');
+        return;
       }
-      if (!Number.isFinite(rid) || rid <= 0) {
-        const e = new Error('شناسه‌ی کاربر مقصد نامعتبر است.');
-        setLastError(e);
-        return null;
+      if (!endpoints?.makeContact) {
+        console.warn('[DM] endpoints.makeContact is missing', endpoints);
+        return;
       }
+
+      setPending(true);
+      setLastError(null);
 
       try {
-        setPending(true);
-
-        const url = endpoints.firstMessage;
-
-        const payload = { recipient_id: rid, content: String(content ?? '') };
-
-        // لاگ دیباگ
-        // eslint-disable-next-line no-console
-        console.log('[DM REQUEST]', url, payload);
-
-        const resp = await axios.post(url, payload, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          // برای اطمینان در برخی پراکسی‌ها
-          transformRequest: [
-            (data, headers) => {
-              if (!headers['Content-Type']) {
-                headers['Content-Type'] = 'application/json';
-              }
-              return JSON.stringify(data);
-            },
-          ],
-          validateStatus: (s) => s >= 200 && s < 500, // تا 422 را هم بگیریم و لاگ کنیم
+        const url = endpoints.makeContact;
+        console.log('[DM] make-contact →', url, {
+          recipientId,
+          contentPreview: content.slice(0, 50),
         });
 
-        // لاگ پاسخ
-        console.log('[DM RESPONSE]', resp.status, resp.data);
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            recipient_id: recipientId,
+            content,
+          }),
+        });
 
-        if (resp.status === 201 || resp.status === 200) {
-          const roomId = resp?.data?.room?.id;
-          if (roomId && typeof handleSelectChat === 'function') {
-            handleSelectChat(roomId);
-          }
-          return resp.data ?? null;
+        const data = await resp.json().catch(() => ({}));
+
+        if (!resp.ok) {
+          console.error('[DM] FAIL', resp.status, data);
+          throw new Error(
+            data?.message || `Make-contact failed with status ${resp.status}`,
+          );
         }
 
-        // هندل خطاهای 4xx/5xx
-        const status = resp.status;
-        const apiMsg =
-          resp?.data?.message ||
-          resp?.data?.error ||
-          (status === 401
-            ? 'دسترسی غیرمجاز (توکن نامعتبر یا منقضی).'
-            : status === 422
-            ? (resp?.data?.errors &&
-                Object.entries(resp.data.errors)
-                  .map(
-                    ([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`,
-                  )
-                  .join(' | ')) ||
-              'ورودی نامعتبر (recipient_id یا content).'
-            : 'خطای داخلی سرور هنگام ایجاد/باز کردن DM.');
+        console.log('[DM] RESPONSE make-contact', resp.status, data);
 
-        console.error('[DM] FAIL', status, apiMsg, resp.data || {});
-        setLastError(new Error(apiMsg || `HTTP ${status}`));
-        return null;
+        const room = data.room;
+        if (!room) {
+          throw new Error('No room returned from make-contact');
+        }
+
+        // 👇 روم انتخاب می‌شود
+        handleSelectChat(room.id, recipientId);
+        return data;
       } catch (err) {
-        console.error('[DM] EXCEPTION', err);
-        setLastError(new Error('خطای غیرمنتظره هنگام ایجاد/باز کردن DM.'));
+        console.error('[DM] ERROR', err);
+        setLastError(err);
         return null;
       } finally {
         setPending(false);
       }
     },
-    [endpoints?.firstMessage, accessToken, handleSelectChat],
+    [endpoints, accessToken, handleSelectChat],
   );
 
   return { openOrCreate, pending, lastError };

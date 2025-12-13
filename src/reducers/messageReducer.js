@@ -1,31 +1,64 @@
+// src/reducers/messageReducer.js
 import { produce } from 'immer';
 import messageActionTypes from '../actions/messageActionTypes';
 
 const initialState = {
   currentUser: {},
   users: {},
-  individualMessages: {},   // map: { [userId]: conversationObj }
-  groupMessages: {},        // map: { [groupId]: messageObj } (اگر لازم)
+
+  // map: { [partnerId]: conversationObj }
+  // conversationObj نمونه:
+  // {
+  //   partnerId,
+  //   roomId,
+  //   first_name,
+  //   last_message,
+  //   last_message_at,
+  //   unread_count,
+  //   is_online,
+  //   messages: [ ... ],
+  // }
+  individualMessages: {},
+
+  // map: { [groupId]: groupConversationObj }
+  groupMessages: {},
+
   selectedRoom: null,
+
   loadingStates: { users: false, messages: false },
   errorStates: { users: null, messages: null },
-  typingIndicators: {},
-};
 
-// کمک: اگر نبود، مقدار پیش‌فرض بساز
-const findOrCreateConversation = (conversations, conversationId, defaultData) =>
-  conversations[conversationId] || defaultData;
+  typingIndicators: {}, // { [userId]: true|false }
+};
 
 const safeIsObject = (v) => v && typeof v === 'object';
 
+// کمک: مقدار پیش‌فرض کانورسیشن
+const makeDefaultConversation = (partnerId, userObj = {}, roomId = null) => ({
+  partnerId,
+  roomId: roomId ?? null,
+  first_name:
+    userObj.first_name ||
+    userObj.firstName ||
+    userObj.name ||
+    userObj.email ||
+    `User #${partnerId}`,
+  last_message: null,
+  last_message_at: null,
+  unread_count: 0,
+  is_online: !!userObj.is_online,
+  messages: [],
+});
+
 const messageReducer = produce((draft, action) => {
-  // گارد اکشن
   if (!action || typeof action !== 'object' || action.type == null) {
     console.warn('[messageReducer] invalid action', action);
     return;
   }
 
   switch (action.type) {
+    /* ---------------- CURRENT USER / USERS ---------------- */
+
     case messageActionTypes.SET_CURRENT_USER: {
       if (!safeIsObject(action.payload)) {
         draft.errorStates.users = 'Invalid user data';
@@ -47,33 +80,86 @@ const messageReducer = produce((draft, action) => {
       break;
     }
 
+    /* ---------------- INDIVIDUAL CONVERSATIONS ---------------- */
+
+    // ✅ حالا این اکشن، کانورسیشن‌ها را ست می‌کند
+    // payload می‌تواند:
+    //  - یک map آماده { [partnerId]: convObj }
+    //  - یا یک آرایه از convObjها باشد
     case messageActionTypes.SET_INDIVIDUAL_MESSAGES: {
-      if (!Array.isArray(action.payload)) {
-        draft.errorStates.messages = 'Invalid messages data';
+      const payload = action.payload;
+
+      // اگر map آماده است
+      if (safeIsObject(payload) && !Array.isArray(payload)) {
+        draft.individualMessages = { ...draft.individualMessages, ...payload };
+        draft.errorStates.messages = null;
         break;
       }
+
+      if (!Array.isArray(payload)) {
+        draft.errorStates.messages = 'Invalid conversations data';
+        break;
+      }
+
+      const map = payload.reduce((acc, conv) => {
+        if (!safeIsObject(conv)) return acc;
+
+        const partnerId =
+          conv.partnerId || conv.partner_id || conv.user_id || conv.id || null;
+        const roomId =
+          conv.roomId ||
+          conv.room_id ||
+          conv.chat_room_id ||
+          conv.room?.id ||
+          null;
+
+        if (!partnerId || !roomId) return acc;
+
+        const userObj = draft.users?.[partnerId] || conv.user || {};
+        const base = makeDefaultConversation(partnerId, userObj, roomId);
+
+        acc[partnerId] = {
+          ...base,
+          ...conv, // هرچی از بک‌اند اومده override کنه
+          partnerId,
+          roomId,
+        };
+
+        return acc;
+      }, {});
+
       draft.individualMessages = {
         ...draft.individualMessages,
-        ...action.payload.reduce((acc, msg) => {
-          if (safeIsObject(msg) && msg.id != null) acc[msg.id] = msg;
-          return acc;
-        }, {}),
+        ...map,
       };
+      draft.errorStates.messages = null;
       break;
     }
 
     case messageActionTypes.SET_GROUP_MESSAGES: {
-      if (!Array.isArray(action.payload)) {
+      const payload = action.payload;
+
+      if (safeIsObject(payload) && !Array.isArray(payload)) {
+        draft.groupMessages = { ...draft.groupMessages, ...payload };
+        draft.errorStates.messages = null;
+        break;
+      }
+
+      if (!Array.isArray(payload)) {
         draft.errorStates.messages = 'Invalid group messages data';
         break;
       }
+
       draft.groupMessages = {
         ...draft.groupMessages,
-        ...action.payload.reduce((acc, msg) => {
-          if (safeIsObject(msg) && msg.id != null) acc[msg.id] = msg;
+        ...payload.reduce((acc, group) => {
+          if (safeIsObject(group) && group.id != null) {
+            acc[group.id] = group;
+          }
           return acc;
         }, {}),
       };
+      draft.errorStates.messages = null;
       break;
     }
 
@@ -82,64 +168,76 @@ const messageReducer = produce((draft, action) => {
       break;
     }
 
-    case messageActionTypes.UPDATE_MESSAGES: {
-      // ساختار ورودی مورد انتظار:
-      // payload = { message: { type: 'new_message_notification'|'message', message: {...} } }
-      const p = action.payload || {};
-      const wrapper = safeIsObject(p.message) ? p.message : null;
-      const msg = safeIsObject(wrapper?.message) ? wrapper.message : null;
-      const isNewMessageNotification =
-        wrapper?.type === 'new_message_notification';
+    /* ---------------- LIVE MESSAGE UPDATES (WS / HTTP) ---------------- */
 
-      if (!safeIsObject(draft.currentUser) || !draft.users || !msg) {
-        draft.errorStates.messages = 'User or message data missing';
-        console.error('User or message data missing:', {
-          currentUser: draft.currentUser,
-          users: draft.users,
-          msg,
-        });
+    // ChatWindow → dispatch(updateMessages(packet));
+    // packet شکلش چیزی مثل اینه:
+    // { type: 'message' | 'new_message_notification', message: {...} }
+    case messageActionTypes.UPDATE_MESSAGES: {
+      const packet = action.payload || {};
+      const msg = safeIsObject(packet.message) ? packet.message : null;
+      const isNewMessageNotification =
+        packet.type === 'new_message_notification';
+
+      if (!msg) {
+        draft.errorStates.messages = 'Missing message payload';
         break;
       }
 
-      const senderId = msg.sender_id ?? msg.senderId;
+      const me =
+        draft.currentUser &&
+        (draft.currentUser.id ||
+          draft.currentUser.user_id ||
+          draft.currentUser.userId);
+
+      if (!me) {
+        draft.errorStates.messages = 'Current user not set';
+        break;
+      }
+
+      const senderId = msg.sender_id ?? msg.senderId ?? msg.user_id;
       const receiverId = msg.receiver_id ?? msg.receiverId;
+      const roomId = msg.chat_room_id ?? msg.room_id ?? msg.roomId ?? null;
 
       if (senderId == null || receiverId == null) {
-        draft.errorStates.messages =
-          'Invalid message schema (sender/receiver missing)';
+        draft.errorStates.messages = 'Invalid message schema (sender/receiver)';
         break;
       }
 
-      const meId =
-        draft.currentUser.id ??
-        draft.currentUser.user_id ??
-        draft.currentUser.userId;
-      const conversationId = meId === senderId ? receiverId : senderId;
+      // partnerId = طرف مقابل
+      const partnerId = Number(me) === Number(senderId) ? receiverId : senderId;
 
-      const conversation = findOrCreateConversation(
-        draft.individualMessages,
-        conversationId,
-        {
-          id: conversationId,
-          first_name: draft.users[conversationId]?.first_name || '',
-          last_message: null,
-          unread_count: 0,
-          typing: false,
-          is_online: !!draft.users[conversationId]?.is_online,
-          // اختیاری: اگر بخواهی لیست پیام‌ها را هم ذخیره کنی
-          messages: [],
-        },
-      );
+      // کانورسیشن فعلی یا جدید
+      const existing = draft.individualMessages[partnerId];
+      const userObj = draft.users?.[partnerId] || {};
+      const conversation =
+        existing || makeDefaultConversation(partnerId, userObj, roomId);
 
-      conversation.last_message = msg;
-      if (Array.isArray(conversation.messages)) {
-        conversation.messages.push(msg);
+      if (!conversation.roomId && roomId) {
+        conversation.roomId = roomId;
       }
-      if (isNewMessageNotification) {
+
+      // آخرین پیام + زمان آخرین پیام
+      conversation.last_message = msg;
+      conversation.last_message_at =
+        msg.created_at || msg.timestamp || new Date().toISOString();
+
+      // آرایهٔ messages
+      if (!Array.isArray(conversation.messages)) {
+        conversation.messages = [];
+      }
+      conversation.messages.push(msg);
+
+      // افزایش unread اگر پیام جدید از طرف مقابل است
+      if (
+        isNewMessageNotification ||
+        Number(senderId) !== Number(me) // از طرف مقابل
+      ) {
         conversation.unread_count = (conversation.unread_count || 0) + 1;
       }
 
-      draft.individualMessages[conversationId] = conversation;
+      draft.individualMessages[partnerId] = conversation;
+      draft.errorStates.messages = null;
       break;
     }
 
@@ -152,12 +250,14 @@ const messageReducer = produce((draft, action) => {
     }
 
     case messageActionTypes.CLEAR_UNREAD_COUNT: {
-      const conversationId = action.payload;
-      if (conversationId != null && draft.individualMessages[conversationId]) {
-        draft.individualMessages[conversationId].unread_count = 0;
+      const partnerId = action.payload;
+      if (partnerId != null && draft.individualMessages[partnerId]) {
+        draft.individualMessages[partnerId].unread_count = 0;
       }
       break;
     }
+
+    /* ---------------- LOADING / ERROR / TYPING ---------------- */
 
     case messageActionTypes.SET_LOADING: {
       const { type, status } = action.payload || {};
@@ -184,13 +284,10 @@ const messageReducer = produce((draft, action) => {
     }
 
     case messageActionTypes.DELETE_MESSAGE: {
-      const { messageId, conversationId } = action.payload || {};
+      const { messageId, partnerId } = action.payload || {};
       const conv =
-        conversationId != null
-          ? draft.individualMessages[conversationId]
-          : null;
+        partnerId != null ? draft.individualMessages[partnerId] : null;
 
-      // اگر کانورسیشن ساختار messages:[] دارد، از آن حذف کن
       if (conv && Array.isArray(conv.messages)) {
         conv.messages = conv.messages.filter((m) => m && m.id !== messageId);
       }

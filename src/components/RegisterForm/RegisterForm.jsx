@@ -1,15 +1,9 @@
 // src/components/RegisterForm.js
 import React, { useState } from 'react';
 import { Form, Button, Container, Row, Col } from 'react-bootstrap';
-import axios from 'axios';
 import { useNavigate, Link } from 'react-router-dom';
 import { toast } from 'react-toastify';
-
-const API_BASE =
-  (typeof process !== 'undefined' &&
-    process.env &&
-    process.env.REACT_APP_API_BASE_LARAVEL) ||
-  'http://localhost:8000/api';
+import { registerApi } from '@/services/authService';
 
 const RegisterForm = () => {
   const navigate = useNavigate();
@@ -30,7 +24,7 @@ const RegisterForm = () => {
       ...prev,
       [e.target.name]: e.target.value,
     }));
-    setError(''); // پاک کردن خطای کلی با هر تغییر
+    setError('');
   };
 
   const { first_name, last_name, email, password, password2 } = formData;
@@ -38,7 +32,6 @@ const RegisterForm = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // ولیدیشن ساده فرانت
     if (!first_name || !last_name || !email || !password || !password2) {
       setError('همه فیلدها الزامی هستند.');
       return;
@@ -48,60 +41,37 @@ const RegisterForm = () => {
       return;
     }
 
-    const payload = {
-      first_name: first_name.trim(),
-      last_name: last_name.trim(),
-      email: email.trim(),
-      password: password, // سرور خودش هش می‌کند
-      password_confirmation: password2, // لاراول نیاز دارد
-    };
-
-    const url = `${API_BASE.replace(/\/+$/, '')}/auth/register`; // بدون اسلش پایانی
-
     try {
       setSubmitting(true);
       setError('');
 
-      // --- DEBUG: درخواست
-      // eslint-disable-next-line no-console
-      console.debug('[REGISTER REQUEST]', {
-        url,
-        payload,
-        headers: { Accept: 'application/json' },
+      console.debug('[REGISTER REQUEST PAYLOAD]', {
+        first_name,
+        last_name,
+        email,
       });
 
-      const res = await axios.post(url, payload, {
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        // timeout: 15000, // در صورت نیاز
+      const data = await registerApi({
+        first_name,
+        last_name,
+        email,
+        password,
+        password2,
       });
 
-      // --- DEBUG: پاسخ
-      // eslint-disable-next-line no-console
-      console.debug('[REGISTER RESPONSE]', res.status, res.data);
+      console.debug('[REGISTER RESPONSE DATA]', data);
 
-      // بعضی APIها 200 می‌دهند، بعضی 201
-      if (res.status === 200 || res.status === 201) {
-        toast.success('ثبت‌نام موفق! لطفاً ایمیل خود را تأیید کنید.');
-        console.log(res)
-        navigate('/verify-email');
-      } else {
-        // حالت غیرمنتظره
-        toast.info(`ثبت‌نام انجام شد (status: ${res.status}).`);
-        navigate('/verify-email');
-      }
+   
+      sessionStorage.setItem('pending_email', email.trim());
+      if (data.otp) sessionStorage.setItem('pending_otp', data.otp);
+
+      toast.success('ثبت‌نام موفق! لطفاً ایمیل خود را با کد OTP تأیید کنید.');
+      navigate('/verify-email');
     } catch (err) {
-      // --- DEBUG: خطا
-      // eslint-disable-next-line no-console
       console.error('[REGISTER ERROR RAW]', err);
-
-      // تلاش برای استخراج پیام دقیق از ساختارهای رایج لاراول
       const resp = err?.response;
       const data = resp?.data;
 
-      // eslint-disable-next-line no-console
       console.debug('[REGISTER ERROR PARSED]', {
         status: resp?.status,
         data,
@@ -109,7 +79,6 @@ const RegisterForm = () => {
 
       let message = 'خطای سرور. لطفاً بعداً دوباره تلاش کنید.';
 
-      // ساختار رایج: { message: "...", errors: { field: [msg, ...], ... } }
       if (data?.errors && typeof data.errors === 'object') {
         const firstField = Object.keys(data.errors)[0];
         const firstMsg = data.errors[firstField]?.[0];
@@ -120,6 +89,8 @@ const RegisterForm = () => {
         message = data;
       } else if (resp?.status === 422) {
         message = 'اعتبارسنجی ناموفق بود. لطفاً فیلدها را بررسی کنید.';
+      } else if (err.message === 'NO_XSRF_TOKEN') {
+        message = 'مشکل در CSRF. لطفاً صفحه را رفرش کرده و دوباره امتحان کنید.';
       }
 
       setError(message);

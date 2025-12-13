@@ -2,7 +2,7 @@
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
-Pusher.logToConsole = process.env.NODE_ENV !== 'production';
+Pusher.logToConsole = import.meta.env.DEV === true;
 
 const key = import.meta.env.VITE_PUSHER_KEY;
 const cluster = import.meta.env.VITE_PUSHER_CLUSTER;

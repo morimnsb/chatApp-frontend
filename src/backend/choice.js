@@ -1,7 +1,12 @@
 // src/backend/choice.js
 import { useCallback, useState } from 'react';
 
-export const BACKENDS = ['laravel', 'django', 'reverb'];
+/**
+ * 🎯 از این به بعد فقط دو mode:
+ * - 'reverb'  → Laravel + Reverb/Echo (real-time)
+ * - 'django'  → Django backend
+ */
+export const BACKENDS = ['reverb', 'django'];
 export const BACKEND_KEY = 'backendChoice';
 
 /* ---------- safe localStorage ---------- */
@@ -27,12 +32,9 @@ function joinPath(base, path) {
   return b ? `${b}/${p}` : `/${p}`;
 }
 
-/* ---------- CRA env reader ---------- */
+/* ---------- env reader (Vite) ---------- */
 function env(key, fallback = undefined) {
-  return (
-    (typeof process !== 'undefined' && process.env && process.env[key]) ??
-    fallback
-  );
+  return (import.meta.env && import.meta.env[key]) ?? fallback;
 }
 
 /* ---------- sanitize base URLs ---------- */
@@ -46,8 +48,10 @@ function normalizeBase(val, fallback) {
 export function getChosenBackend() {
   const saved = safeGetItem(BACKEND_KEY);
   if (saved && BACKENDS.includes(saved)) return saved;
-  const envDefault = String(env('REACT_APP_BACKEND', 'laravel')).toLowerCase();
-  return BACKENDS.includes(envDefault) ? envDefault : 'laravel';
+
+  // پیش‌فرض: reverb (Laravel + Reverb)
+  const envDefault = String(env('REACT_APP_BACKEND', 'reverb')).toLowerCase();
+  return BACKENDS.includes(envDefault) ? envDefault : 'reverb';
 }
 
 export function setChosenBackend(value) {
@@ -60,23 +64,22 @@ export function setChosenBackend(value) {
 
 /* ---------- build endpoints (ABSOLUTE) ---------- */
 export function buildEndpoints(kind) {
-  const k = String(kind || 'laravel').toLowerCase();
+  const k = String(kind || 'reverb').toLowerCase();
 
-  // .env
-  // REACT_APP_API_BASE_LARAVEL=http://localhost:8000/api
-  const baseLaravel = normalizeBase(
-    env('REACT_APP_API_BASE_LARAVEL'),
+  // .env مثال:
+  // REACT_APP_API_BASE_REVERB=http://localhost:8000/api
+  // REACT_APP_API_BASE_DJANGO=http://localhost:8001
+  const baseReverb = normalizeBase(
+    env('REACT_APP_API_BASE_REVERB') || env('REACT_APP_API_BASE_LARAVEL'),
     'http://localhost:8000/api',
   );
+
   const baseDjango = normalizeBase(
     env('REACT_APP_API_BASE_DJANGO'),
     'http://localhost:8000',
   );
-  const baseReverb = normalizeBase(
-    env('REACT_APP_API_BASE_REVERB'),
-    baseLaravel,
-  );
 
+  // ---------- DJANGO ----------
   if (k === 'django') {
     return {
       base: baseDjango,
@@ -85,49 +88,46 @@ export function buildEndpoints(kind) {
       users: joinPath(baseDjango, '/auth/users/'),
       friend: joinPath(baseDjango, '/chat/friendship/'),
       me: joinPath(baseDjango, '/auth/me/'),
+
+      makeContact: null,
       firstMessage: null,
-      // helper اختیاری برای پیام‌های روم
+
       roomMessages: (roomId) =>
         joinPath(baseDjango, `/chat/messages/${roomId}/`),
+
       kind: 'django',
     };
   }
 
-  if (k === 'reverb') {
-    return {
-      base: baseReverb,
-      convos: joinPath(baseReverb, '/chatMeetUp/conversations/'),
-      rooms: joinPath(baseReverb, '/chatMeetUp/chatrooms/'),
-      users: joinPath(baseReverb, '/auth/users/'),
-      friend: joinPath(baseReverb, '/chatMeetUp/friendship'),
-      me: joinPath(baseReverb, '/auth/me'),
-      firstMessage: joinPath(baseReverb, '/chatMeetUp/first-message'),
-      roomMessages: (roomId) =>
-        joinPath(baseReverb, `/chatMeetUp/messages/${roomId}/`),
-      kind: 'reverb',
-    };
-  }
-
-  // laravel (default)
+  // ---------- LARAVEL + REVERB (default) ----------
   return {
-    base: baseLaravel,
-    convos: joinPath(baseLaravel, '/chatMeetUp/conversations/'),
-    rooms: joinPath(baseLaravel, '/chatMeetUp/chatrooms/'),
-    users: joinPath(baseLaravel, '/auth/users/'),
-    friend: joinPath(baseLaravel, '/chatMeetUp/friendship'),
-    me: joinPath(baseLaravel, '/auth/me'),
-    firstMessage: joinPath(baseLaravel, '/chatMeetUp/first-message'),
+    base: baseReverb,
+    convos: joinPath(baseReverb, '/chatMeetUp/conversations/'),
+    rooms: joinPath(baseReverb, '/chatMeetUp/chatrooms/'),
+    users: joinPath(baseReverb, '/auth/users/'),
+    friend: joinPath(baseReverb, '/chatMeetUp/friendship'),
+    me: joinPath(baseReverb, '/auth/me'),
+
+    // برای باز کردن/ساختن DM
+    makeContact: joinPath(baseReverb, '/chatMeetUp/make-contact'),
+    firstMessage: joinPath(baseReverb, '/chatMeetUp/make-contact'),
+
     roomMessages: (roomId) =>
-      joinPath(baseLaravel, `/chatMeetUp/messages/${roomId}/`),
-    kind: 'laravel',
+      joinPath(baseReverb, `/chatMeetUp/messages/${roomId}/`),
+
+    kind: 'reverb',
   };
 }
 
-/* ---------- raw WS URL (optional) ---------- */
+/* ---------- raw WS URL (فقط برای Django) ---------- */
 export function buildWsUrl(kind, token) {
-  const k = String(kind || 'laravel').toLowerCase();
+  const k = String(kind || 'reverb').toLowerCase();
+
+  // برای Reverb از Echo connector استفاده می‌کنیم، نه buildWsUrl
   if (k === 'reverb') return null;
-  const raw = env('REACT_APP_WS_URL', 'ws://localhost:8000/ws/chat/');
+
+  // برای Django:
+  const raw = env('REACT_APP_WS_URL_DJANGO', 'ws://localhost:8000/ws/chat/');
   const base = normalizeBase(raw, 'ws://localhost:8000/ws/chat');
   const sep = String(base).includes('?') ? '&' : '?';
   const t = encodeURIComponent(token || '');
@@ -137,6 +137,7 @@ export function buildWsUrl(kind, token) {
 /* ---------- hook ---------- */
 export function useBackendChoice() {
   const [backendChoice, setBackendChoiceState] = useState(getChosenBackend());
+
   const handleChangeBackend = useCallback((eOrValue) => {
     const raw =
       typeof eOrValue === 'string' ? eOrValue : eOrValue?.target?.value;
@@ -145,8 +146,10 @@ export function useBackendChoice() {
     setBackendChoiceState(v);
     setChosenBackend(v);
   }, []);
+
   const effectiveKind = BACKENDS.includes(backendChoice)
     ? backendChoice
-    : 'laravel';
+    : 'reverb';
+
   return { backendChoice: effectiveKind, effectiveKind, handleChangeBackend };
 }

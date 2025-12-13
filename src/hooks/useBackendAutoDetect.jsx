@@ -1,7 +1,7 @@
 // src/hooks/useBackendAutoDetect.js
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { detectBackend } from '../api/backendDetect';
-import { findWorkingWS } from '../api/wsHelper';
+import { detectBackend } from '@/api/backendDetect';
+import { findWorkingWS } from '@/api/wsHelper';
 
 /**
  * useBackendAutoDetect
@@ -106,3 +106,4 @@ export default function useBackendAutoDetect(accessToken, options = {}) {
 
   return { backend, wsUrl, refresh };
 }
+

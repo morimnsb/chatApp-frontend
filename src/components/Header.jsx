@@ -1,6 +1,6 @@
 import React, { forwardRef, useImperativeHandle } from 'react';
 import { InputGroup, FormControl, Button, Dropdown } from 'react-bootstrap';
-import Message from '../assets/images/message/message.png';
+import Message from '@/assets/images/message/message.png';
 
 const Header = forwardRef(({ searchQuery, setSearchQuery, setShowUserDropdown }, ref) => {
   useImperativeHandle(ref, () => ({
@@ -53,3 +53,4 @@ const Header = forwardRef(({ searchQuery, setSearchQuery, setShowUserDropdown },
 });
 
 export default Header;
+

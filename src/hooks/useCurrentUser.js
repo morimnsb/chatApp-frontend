@@ -1,8 +1,8 @@
 // src/hooks/useCurrentUser.js
 import { useEffect } from 'react';
 import { useDispatch } from 'react-redux';
-import { setCurrentUser } from '../actions/messageActions';
-import { decodeUserIdFromToken } from '../utils/jwt';
+import { setCurrentUser } from '@/actions/messageActions';
+import { decodeUserIdFromToken } from '@/utils/jwt';
 
 export default function useCurrentUser({
   accessToken,
@@ -36,3 +36,4 @@ export default function useCurrentUser({
     }
   }, [accessToken, effectiveKind, endpoints.me, dispatch]);
 }
+

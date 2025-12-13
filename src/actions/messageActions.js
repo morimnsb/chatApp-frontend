@@ -1,4 +1,4 @@
-import messageActionTypes from './messageActionTypes';
+import messageActionTypes from '@/actions/messageActionTypes';
 
 /**
  * Sets the current user information in the Redux store.
@@ -110,3 +110,4 @@ export const setTypingIndicator = (payload) => ({
   type: messageActionTypes.SET_TYPING_INDICATOR,
   payload,
 });
+

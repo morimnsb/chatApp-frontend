@@ -1,5 +1,5 @@
 // تشخیص خودکار: laravel یا django + مسیرهای API + کاندیدهای WS
-const API = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 function authHeader(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -28,7 +28,7 @@ function laravelRoutes() {
     kind: 'laravel',
     me: `${API}/api/auth/me`,
     users: `${API}/api/auth/users`,
-    convos: `${API}/chatMeetUp/conversations/`,
+    convos: `${API}/chatMeetUp/conversations`,
     rooms: `${API}/chatMeetUp/chatrooms/`,
     friend: `${API}/chatMeetUp/friendship/`,
     // کاندیدهای معمول برای WS در لارا: (بسته به راه‌اندازی شما یکی کار می‌کند)

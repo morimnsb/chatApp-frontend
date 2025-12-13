@@ -2,8 +2,7 @@
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
-const PUSHER_KEY =
-  import.meta.env?.VITE_PUSHER_KEY || process.env.REACT_APP_PUSHER_KEY;
+const PUSHER_KEY = import.meta.env.VITE_PUSHER_KEY;
 const PUSHER_CLUSTER =
   import.meta.env?.VITE_PUSHER_CLUSTER ||
   process.env.REACT_APP_PUSHER_CLUSTER ||

@@ -1,9 +1,6 @@
 // src/hooks/useFetch.js
 import { useEffect, useRef, useState, useCallback } from 'react';
-import axios from 'axios';
-
-// اگر axiosInstance سفارشی داری، می‌توانی به جای axios از آن استفاده کنی.
-// import axiosInstance from '../services/axiosInstance';
+import apiClient from '@/services/apiClient';
 
 const ABSOLUTE_RE = /^(?:https?:)?\/\//i;
 
@@ -22,7 +19,6 @@ export default function useFetch(path, config = {}) {
   const doFetch = useCallback(async () => {
     if (!path) return;
 
-    // اگر قبلاً درخواست در حال اجراست، لغوش کن
     if (abortRef.current) {
       abortRef.current.abort();
     }
@@ -33,46 +29,45 @@ export default function useFetch(path, config = {}) {
     setError(null);
 
     try {
-      // تشخیص URL مطلق
       const url = isAbsoluteUrl(path) ? path : path.replace(/^\/+/, '/');
 
-      // اگر از axiosInstance با baseURL استفاده می‌کنی، این‌جا جایگزین axios کن:
-      const resp = await axios.request({
+      const resp = await apiClient.request({
         url,
         method: config.method || 'GET',
         headers: config.headers,
+        params: config.params,
         data: config.body,
         signal: controller.signal,
-        // با axios ساده، baseURL لحاظ نمی‌شود مگر خودت بدهی.
-        // اگر می‌خواهی baseURL سراسری داشته باشی، یک axiosInstance بساز و این‌جا استفاده کن.
       });
 
       setData(resp?.data ?? null);
       setLoading(false);
       setError(null);
       lastUrlRef.current = url;
+      
     } catch (err) {
-      if (controller.signal.aborted) return; // لغو شد
+      if (controller.signal.aborted) return;
 
-      // لاگ مفید برای دیباگ
       // eslint-disable-next-line no-console
       console.error('[useFetch NETWORK/HTTP ERROR]', {
         path,
         normalized: lastUrlRef.current || path,
         err,
       });
+console.log('status', err?.response?.status);
+console.log('data', err?.response?.data);
+console.log('content-type', err?.response?.headers?.['content-type']);
 
       setError(err);
       setLoading(false);
     } finally {
       abortRef.current = null;
     }
-  }, [path, config.method, config.headers, config.body]);
+  }, [path, config.method, config.headers, config.params, config.body]);
 
   useEffect(() => {
     if (config.immediate === false) return;
     doFetch();
-    // cleanup abort on unmount
     return () => {
       if (abortRef.current) abortRef.current.abort();
     };
