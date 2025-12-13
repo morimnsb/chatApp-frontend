@@ -71,7 +71,18 @@ const HomeChat = () => {
   });
 
   // Echo/Reverb (only when effectiveKind === 'reverb')
-  useReverbEcho({ effectiveKind, accessToken });
+  useReverbEcho({
+    effectiveKind,
+    accessToken,
+    roomId: selectedRoom, // 👈 داینامیک
+    onMessage: (e) => {
+      // dispatch(updateMessages(e)) یا هر هندلینگ دلخواه
+    },
+    onTyping: (e) => {
+      // dispatch(setTypingIndicator(e.userId)) ...
+    },
+  });
+
 
   // Derived lists
   const individualArray = useMemo(

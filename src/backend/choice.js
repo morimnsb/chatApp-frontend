@@ -62,9 +62,8 @@ export function setChosenBackend(value) {
 export function buildEndpoints(kind) {
   const k = String(kind || 'laravel').toLowerCase();
 
-  // از .env شما:
+  // .env
   // REACT_APP_API_BASE_LARAVEL=http://localhost:8000/api
-  // (برای Django/Reverb اگر جدا هستند می‌توانید مقدار جدا بدهید)
   const baseLaravel = normalizeBase(
     env('REACT_APP_API_BASE_LARAVEL'),
     'http://localhost:8000/api',
@@ -87,6 +86,9 @@ export function buildEndpoints(kind) {
       friend: joinPath(baseDjango, '/chat/friendship/'),
       me: joinPath(baseDjango, '/auth/me/'),
       firstMessage: null,
+      // helper اختیاری برای پیام‌های روم
+      roomMessages: (roomId) =>
+        joinPath(baseDjango, `/chat/messages/${roomId}/`),
       kind: 'django',
     };
   }
@@ -100,6 +102,8 @@ export function buildEndpoints(kind) {
       friend: joinPath(baseReverb, '/chatMeetUp/friendship'),
       me: joinPath(baseReverb, '/auth/me'),
       firstMessage: joinPath(baseReverb, '/chatMeetUp/first-message'),
+      roomMessages: (roomId) =>
+        joinPath(baseReverb, `/chatMeetUp/messages/${roomId}/`),
       kind: 'reverb',
     };
   }
@@ -113,6 +117,8 @@ export function buildEndpoints(kind) {
     friend: joinPath(baseLaravel, '/chatMeetUp/friendship'),
     me: joinPath(baseLaravel, '/auth/me'),
     firstMessage: joinPath(baseLaravel, '/chatMeetUp/first-message'),
+    roomMessages: (roomId) =>
+      joinPath(baseLaravel, `/chatMeetUp/messages/${roomId}/`),
     kind: 'laravel',
   };
 }
@@ -121,8 +127,6 @@ export function buildEndpoints(kind) {
 export function buildWsUrl(kind, token) {
   const k = String(kind || 'laravel').toLowerCase();
   if (k === 'reverb') return null;
-  // از .env شما:
-  // REACT_APP_WS_URL=ws://localhost:8000/ws/chat/
   const raw = env('REACT_APP_WS_URL', 'ws://localhost:8000/ws/chat/');
   const base = normalizeBase(raw, 'ws://localhost:8000/ws/chat');
   const sep = String(base).includes('?') ? '&' : '?';

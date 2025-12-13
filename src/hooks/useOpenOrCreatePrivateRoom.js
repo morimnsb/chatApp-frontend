@@ -1,70 +1,108 @@
 // src/hooks/useOpenOrCreatePrivateRoom.js
-import { useCallback } from 'react';
-import { toast } from 'react-toastify';
-import useGenerateRoomId from './useGenerateRoomId'; // همون XOR قبلی
-import { useSelector } from 'react-redux';
+import { useCallback, useState } from 'react';
+import axios from 'axios';
 
 export default function useOpenOrCreatePrivateRoom({
-  endpoints, // از buildEndpoints
-  effectiveKind, // 'laravel' | 'reverb' | 'django'
+  endpoints,
+  effectiveKind,
   accessToken,
-  handleSelectChat, // (roomId, receiverId)
+  handleSelectChat,
 }) {
-  const currentUser = useSelector(
-    (s) => s.auth?.currentUser ?? s.message?.currentUser,
-  );
-
-  const generateRoomId = useGenerateRoomId(currentUser, handleSelectChat);
+  const [pending, setPending] = useState(false);
+  const [lastError, setLastError] = useState(null);
 
   const openOrCreate = useCallback(
-    async (toUserId, firstText = '') => {
-      // اگر جنگوست → روش کلاینتی
-      if (effectiveKind === 'django') {
-        generateRoomId(toUserId);
-        return;
+    async (recipientId, content = 'Hi! useOpen') => {
+      setLastError(null);
+
+      // 1) اعتبارسنجی ورودی
+      const rid = Number(recipientId);
+      if (!endpoints?.firstMessage) {
+        const e = new Error('firstMessage endpoint تعریف نشده است.');
+        setLastError(e);
+        return null;
+      }
+      if (!accessToken) {
+        const e = new Error('توکن احراز هویت وجود ندارد.');
+        setLastError(e);
+        return null;
+      }
+      if (!Number.isFinite(rid) || rid <= 0) {
+        const e = new Error('شناسه‌ی کاربر مقصد نامعتبر است.');
+        setLastError(e);
+        return null;
       }
 
-      // Laravel/Reverb: بک‌اند روم را می‌سازد/برمی‌گرداند
       try {
-        const resp = await fetch(endpoints.firstMessage, {
-          method: 'POST',
+        setPending(true);
+
+        const url = endpoints.firstMessage;
+
+        const payload = { recipient_id: rid, content: String(content ?? '') };
+
+        // لاگ دیباگ
+        // eslint-disable-next-line no-console
+        console.log('[DM REQUEST]', url, payload);
+
+        const resp = await axios.post(url, payload, {
           headers: {
-            'Content-Type': 'application/json',
             Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
           },
-          body: JSON.stringify({
-            to_user_id: toUserId,
-            text: firstText || '',
-          }),
+          // برای اطمینان در برخی پراکسی‌ها
+          transformRequest: [
+            (data, headers) => {
+              if (!headers['Content-Type']) {
+                headers['Content-Type'] = 'application/json';
+              }
+              return JSON.stringify(data);
+            },
+          ],
+          validateStatus: (s) => s >= 200 && s < 500, // تا 422 را هم بگیریم و لاگ کنیم
         });
 
-        if (!resp.ok) {
-          const e = await resp.json().catch(() => ({}));
-          throw new Error(e?.error || `HTTP ${resp.status}`);
+        // لاگ پاسخ
+        console.log('[DM RESPONSE]', resp.status, resp.data);
+
+        if (resp.status === 201 || resp.status === 200) {
+          const roomId = resp?.data?.room?.id;
+          if (roomId && typeof handleSelectChat === 'function') {
+            handleSelectChat(roomId);
+          }
+          return resp.data ?? null;
         }
 
-        const data = await resp.json().catch(() => ({}));
-        const roomId = data?.room_id;
-        if (!roomId) throw new Error('Missing room_id in response');
+        // هندل خطاهای 4xx/5xx
+        const status = resp.status;
+        const apiMsg =
+          resp?.data?.message ||
+          resp?.data?.error ||
+          (status === 401
+            ? 'دسترسی غیرمجاز (توکن نامعتبر یا منقضی).'
+            : status === 422
+            ? (resp?.data?.errors &&
+                Object.entries(resp.data.errors)
+                  .map(
+                    ([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`,
+                  )
+                  .join(' | ')) ||
+              'ورودی نامعتبر (recipient_id یا content).'
+            : 'خطای داخلی سرور هنگام ایجاد/باز کردن DM.');
 
-        handleSelectChat(roomId, toUserId);
+        console.error('[DM] FAIL', status, apiMsg, resp.data || {});
+        setLastError(new Error(apiMsg || `HTTP ${status}`));
+        return null;
       } catch (err) {
-        // اگر 404 بود یعنی هنوز route/اکشن بک‌اند را نساختی
-        if (String(err.message || '').includes('404')) {
-          toast.error('first-message route not found (backend)');
-        } else {
-          toast.error(err.message || 'Failed to open/create room');
-        }
+        console.error('[DM] EXCEPTION', err);
+        setLastError(new Error('خطای غیرمنتظره هنگام ایجاد/باز کردن DM.'));
+        return null;
+      } finally {
+        setPending(false);
       }
     },
-    [
-      effectiveKind,
-      endpoints.firstMessage,
-      accessToken,
-      handleSelectChat,
-      generateRoomId,
-    ],
+    [endpoints?.firstMessage, accessToken, handleSelectChat],
   );
 
-  return openOrCreate;
+  return { openOrCreate, pending, lastError };
 }

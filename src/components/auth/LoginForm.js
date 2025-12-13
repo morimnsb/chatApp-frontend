@@ -73,10 +73,12 @@ const LoginPage = () => {
 
       // ----- SUCCESS PATH -----
       if (response.status === 200) {
-        const { full_name, access_token, refresh_token } = response.data || {};
+        const { access_token, refresh_token } = response.data || {};
+        const name = response.data.user || {};
+
 
         // sanity check that backend gave us what we expect
-        if (!full_name || !access_token) {
+        if (!name || !access_token) {
           // backend answered 200 but body isn't what we expect
           setError('Invalid response from server (missing token or name)');
           dispatch({ type: 'auth/loading', payload: false });
@@ -89,7 +91,7 @@ const LoginPage = () => {
         // update redux
         dispatch(
           login({
-            user: { full_name },
+            user: { name },
             token: access_token,
             refresh_token,
           }),

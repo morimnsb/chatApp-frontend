@@ -17,6 +17,7 @@ import {
 } from '../actions/messageActions';
 import { formatTime } from '../utils/formatTime';
 import profilephoto1 from '../assets/images/message/profilephoto1.png';
+import { toast } from 'react-toastify';
 
 const isJwt = (t) => typeof t === 'string' && t.split('.').length === 3;
 const stripBearer = (t) => (t || '').toString().replace(/^Bearer\s+/i, '');
@@ -64,10 +65,18 @@ const MessageList = React.memo(({ messages, currentUserId }) => (
 const TypingIndicator = ({ typing }) =>
   typing && <div className="typing-indicator">User is typing...</div>;
 
-const ChatWindow = ({ roomId }) => {
-  const dispatch = useDispatch();
+function buildWsUrlForDjango(roomId, token) {
+  const base = (
+    process.env.REACT_APP_WS_URL || 'ws://localhost:8000/ws/chat/'
+  ).replace(/\/+$/, '');
+  const tokenParam = isJwt(token) ? `?token=${encodeURIComponent(token)}` : '';
+  return `${base}/${roomId}/${tokenParam}`;
+}
 
-  // ✅ سعی کن از Redux (یا پدر) شناسه کاربر را بگیری؛ اگر نبود، می‌ریم سراغ توکن
+const ChatWindow = ({ roomId, endpoints, effectiveKind }) => {
+  const dispatch = useDispatch();
+  const IS_DJANGO = String(effectiveKind || '').toLowerCase() === 'django';
+
   const currentUserFromStore = useSelector(
     (s) => s.auth?.currentUser?.id || s.messages?.currentUserId || null,
   );
@@ -77,23 +86,63 @@ const ChatWindow = ({ roomId }) => {
   const [error, setError] = useState(null);
   const [typing, setTyping] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('Connecting...');
-  const timeoutRef = useRef(null);
-
-  const apiUrl = process.env.REACT_APP_API_URL;
-  const rawToken = localStorage.getItem('access_token') || '';
-  const accessToken = stripBearer(rawToken);
-
-  // ✅ currentUserId مقاوم: اول Redux، بعد JWT، بعد fallback به /me
   const [currentUserId, setCurrentUserId] = useState(
     currentUserFromStore || null,
   );
 
+  // 👇 همه‌ی ref/hookهای مرتبط با نوتیف و تایپینگ داخل کامپوننت
+  const seenMessageIdsRef = useRef(new Set());
+  const timeoutRef = useRef(null);
+  const notifyAudioRef = useRef(null);
+  const lastNotifyAtRef = useRef(0);
+  const originalTitleRef = useRef(document.title);
+  const sendJsonMessageRef = useRef(null); // برای جلوگیری از TDZ
+
+  const rawToken = localStorage.getItem('access_token') || '';
+  const accessToken = stripBearer(rawToken);
+
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    notifyAudioRef.current = new Audio('/sounds/incoming.mp3');
+  }, []);
+
+  const showDesktopNotification = useCallback((title, body, onClick) => {
+    if (Notification?.permission === 'granted' && document.hidden) {
+      const n = new Notification(title, { body });
+      if (onClick) {
+        n.onclick = (e) => {
+          e.preventDefault();
+          window.focus();
+          onClick();
+          n.close();
+        };
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const onVisChange = () => {
+      if (!document.hidden) document.title = originalTitleRef.current;
+    };
+    document.addEventListener('visibilitychange', onVisChange);
+    return () => document.removeEventListener('visibilitychange', onVisChange);
+  }, []);
+
+  const bumpTitle = (count = 1) => {
+    document.title = `(${count}) ${originalTitleRef.current}`;
+  };
+
+  // 1) تعیین currentUserId از Redux یا JWT
   useEffect(() => {
     if (currentUserFromStore) {
       setCurrentUserId(currentUserFromStore);
       return;
     }
-    // اگر JWT معتبر است، decode
     if (isJwt(accessToken)) {
       try {
         const dec = jwtDecode(accessToken);
@@ -105,14 +154,14 @@ const ChatWindow = ({ roomId }) => {
     }
   }, [currentUserFromStore, accessToken]);
 
-  // اگر هنوز id نداریم و توکن هست، از /me بگیر (لاراول opaque token)
+  // 2) اگر هنوز id نداریم و توکن داریم، /me را بخوان
   useEffect(() => {
-    const needFetchMe = !currentUserId && !!accessToken && apiUrl;
+    const needFetchMe = !currentUserId && !!accessToken && endpoints?.me;
     if (!needFetchMe) return;
     let abort = false;
     (async () => {
       try {
-        const resp = await fetch(`${apiUrl}/api/auth/me`, {
+        const resp = await fetch(endpoints.me, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (!resp.ok) throw new Error(`GET /me ${resp.status}`);
@@ -125,9 +174,9 @@ const ChatWindow = ({ roomId }) => {
     return () => {
       abort = true;
     };
-  }, [currentUserId, accessToken, apiUrl]);
+  }, [currentUserId, accessToken, endpoints]);
 
-  // ✅ فقط وقتی roomId داریم fetch کن
+  // 3) گرفتن پیام‌ها
   const fetchConfig = useMemo(
     () =>
       roomId ? { headers: { Authorization: `Bearer ${accessToken}` } } : {},
@@ -139,7 +188,7 @@ const ChatWindow = ({ roomId }) => {
     loading,
     error: fetchError,
   } = useFetch(
-    roomId ? `${apiUrl}/chatMeetUp/messages/${roomId}/` : null,
+    roomId && endpoints?.roomMessages ? endpoints.roomMessages(roomId) : null,
     fetchConfig,
   );
 
@@ -154,36 +203,60 @@ const ChatWindow = ({ roomId }) => {
     }
   }, [fetchError]);
 
-  // ✅ WS URL فقط اگر لازم شد؛ تو پروژه شما Reverb/Echo جداست، پس این می‌تونه null باشند
+  // 4) WS فقط در حالت Django
   const socketUrl = useMemo(() => {
-    if (!roomId) return null;
-    const base = `${apiUrl}/ws/chat/${roomId}/`;
-    const tokenParam = isJwt(accessToken) ? `?token=${accessToken}` : '';
-    return base + tokenParam;
-  }, [apiUrl, roomId, accessToken]);
+    if (!IS_DJANGO || !roomId) return null;
+    return buildWsUrlForDjango(roomId, accessToken);
+  }, [IS_DJANGO, roomId, accessToken]);
 
+  // 🔧 هندلر اصلی نوتیف‌ها (بدون وابستگی مستقیم به sendJsonMessage)
   const handleNotification = useCallback(
     (packet) => {
       if (!packet || !packet.type) return;
+
       switch (packet.type) {
         case 'message': {
           const m = packet.message;
-          if (m && !messages.some((x) => x.id === m.id)) {
+          if (m && !seenMessageIdsRef.current.has(m.id)) {
+            seenMessageIdsRef.current.add(m.id);
             setMessages((prev) => [...prev, m]);
           }
+
           dispatch(updateMessages(packet));
+
           if (m?.sender_id && currentUserId && m.sender_id !== currentUserId) {
-            sendJsonMessage?.({
-              type: 'read_receipt_confirmation',
-              message_id: m.id,
-            });
+            try {
+              sendJsonMessageRef.current?.({
+                type: 'read_receipt_confirmation',
+                message_id: m.id,
+              });
+            } catch {}
+
+            try {
+              const now = Date.now();
+              if (now - lastNotifyAtRef.current > 1200) {
+                lastNotifyAtRef.current = now;
+                toast?.info(m.content ?? 'پیام جدید');
+                notifyAudioRef.current?.play().catch(() => {});
+                showDesktopNotification(
+                  m.sender_name || 'پیام جدید',
+                  m.content || '',
+                  () => {
+                    // اختیاری: dispatch(selectRoom(m.room_id))
+                  },
+                );
+                if (document.hidden) bumpTitle();
+              }
+            } catch {}
           }
           break;
         }
+
         case 'typing_indicator': {
           if (packet.user_id) {
+            // کاربر: «تیپینگ» (واژه: تایپینگ) — pronunciation: «تای-پینگ»
+            if (timeoutRef.current) clearTimeout(timeoutRef.current);
             setTyping(packet.user_id);
-            clearTimeout(timeoutRef.current);
             timeoutRef.current = setTimeout(() => {
               dispatch(resetTypingIndicator(packet.user_id));
               setTyping(null);
@@ -191,6 +264,7 @@ const ChatWindow = ({ roomId }) => {
           }
           break;
         }
+
         case 'message_received': {
           setMessages((prev) =>
             prev.map((x) =>
@@ -199,66 +273,129 @@ const ChatWindow = ({ roomId }) => {
           );
           break;
         }
+
         default:
           console.warn('Unknown WS type:', packet.type);
       }
     },
-    [dispatch, messages, currentUserId],
+    [dispatch, currentUserId, showDesktopNotification],
   );
 
+  // حالا WS را بسازیم و ref را پر کنیم
   const { sendJsonMessage, readyState } = useChatWebSocket(
     socketUrl,
     handleNotification,
   );
+  useEffect(() => {
+    sendJsonMessageRef.current = sendJsonMessage;
+  }, [sendJsonMessage]);
 
   useEffect(() => {
     setConnectionStatus(
-      readyState === 0
-        ? 'Connecting...'
-        : readyState === 1
-        ? 'Connected'
-        : readyState === 2
-        ? 'Disconnecting...'
-        : readyState === 3
-        ? 'Disconnected'
-        : '—',
+      socketUrl
+        ? readyState === 0
+          ? 'Connecting...'
+          : readyState === 1
+          ? 'Connected'
+          : readyState === 2
+          ? 'Disconnecting...'
+          : readyState === 3
+          ? 'Disconnected'
+          : '—'
+        : 'Echo/Reverb (WS handled by Echo)',
     );
-  }, [readyState]);
+  }, [readyState, socketUrl]);
 
+  // 5) ارسال پیام
   const handleSendMessage = useCallback(
-    (e) => {
+    async (e) => {
       e.preventDefault();
-      if (!messageInput.trim()) {
+      const text = messageInput.trim();
+      if (!text) {
         setError('Message cannot be empty');
         return;
       }
-      if (readyState !== 1) {
-        setError('WebSocket connection is not open. Please try again later.');
+
+      if (IS_DJANGO) {
+        if (readyState !== 1) {
+          setError('WebSocket connection is not open. Please try again later.');
+          return;
+        }
+        try {
+          sendJsonMessageRef.current?.({ type: 'chat_message', content: text });
+          setMessageInput('');
+          setError(null);
+        } catch (err) {
+          console.error('Error sending message (WS):', err);
+          setError(`Error sending message. Details: ${err.message}`);
+        }
         return;
       }
+
+      // Laravel/Reverb → HTTP
       try {
-        sendJsonMessage?.({ type: 'chat_message', content: messageInput });
+        const url = endpoints?.roomMessages
+          ? endpoints.roomMessages(roomId)
+          : null;
+        if (!url) throw new Error('roomMessages endpoint is missing');
+
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ content: text }),
+        });
+
+        if (!resp.ok) {
+          const errBody = await resp.json().catch(() => ({}));
+          throw new Error(errBody?.error || `POST message ${resp.status}`);
+        }
+
+        const saved = await resp.json().catch(() => ({}));
+        if (saved?.id) {
+          setMessages((prev) => [...prev, saved]);
+        } else {
+          const localMsg = {
+            id: Date.now(),
+            content: text,
+            sender_id: currentUserId || null,
+            created_at: new Date().toISOString(),
+            read_receipt: false,
+          };
+          setMessages((prev) => [...prev, localMsg]);
+        }
+
         setMessageInput('');
         setError(null);
       } catch (err) {
-        console.error('Error sending message:', err);
-        setError(`Error sending message. Details: ${err.message}`);
+        console.error('Error sending message (HTTP):', err);
+        setError(err.message || 'Failed to send message');
       }
     },
-    [messageInput, readyState, sendJsonMessage],
+    [
+      IS_DJANGO,
+      messageInput,
+      readyState,
+      endpoints,
+      roomId,
+      accessToken,
+      currentUserId,
+    ],
   );
 
   const handleInputChange = useCallback(
     (e) => {
       setMessageInput(e.target.value);
-      if (e.target.value.trim() !== '' && currentUserId) {
-        sendJsonMessage?.({
+      if (e.target.value.trim() !== '' && currentUserId && IS_DJANGO) {
+        sendJsonMessageRef.current?.({
           type: 'typing_indicator',
           sender_id: currentUserId,
         });
       }
     },
-    [sendJsonMessage, currentUserId],
+    [currentUserId, IS_DJANGO],
   );
 
   if (!roomId)
