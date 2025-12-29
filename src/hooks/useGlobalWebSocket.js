@@ -26,13 +26,15 @@ export default function useGlobalWebSocket({
   token,
   debugLabel = 'GlobalWS',
 
+  // ✅ current user (برای کانال خصوصی user)
+  currentUserId,
+
   // Presence
   onOnlineUsersChange,
 
-  // Notifications (optional)
+  // Notifications
   enableGlobalNotifications = false,
   handleGlobalNotification,
-  globalNotificationsChannel = 'notify.global',
 } = {}) {
   const dispatch = useDispatch();
 
@@ -42,7 +44,7 @@ export default function useGlobalWebSocket({
     lastEvent: null,
   });
 
-  // stable refs
+  // --- stable refs (prevent resubscribe due to new function references) ---
   const onOnlineRef = useRef(onOnlineUsersChange);
   useEffect(() => {
     onOnlineRef.current = onOnlineUsersChange;
@@ -55,12 +57,22 @@ export default function useGlobalWebSocket({
 
   // guards
   const presenceJoinedRef = useRef(false);
+
   const notifSubscribedRef = useRef(false);
   const notifChannelNameRef = useRef(null);
 
   const shouldPresence = typeof onOnlineUsersChange === 'function';
+
   const shouldNotifications =
-    enableGlobalNotifications && typeof handleGlobalNotification === 'function';
+    Boolean(enableGlobalNotifications) &&
+    typeof handleGlobalNotification === 'function' &&
+    Number.isFinite(Number(currentUserId)) &&
+    Number(currentUserId) > 0;
+
+  // ✅ user-private channel (Echo private('user.2') => wire: private-user.2)
+  const userPrivateChannel = shouldNotifications
+    ? `user.${Number(currentUserId)}`
+    : null;
 
   const disposeEcho = useCallback(() => {
     if (!globalEcho) return;
@@ -87,7 +99,7 @@ export default function useGlobalWebSocket({
     if (LOG) console.log('[GlobalWS] disposed', debugLabel);
   }, [debugLabel]);
 
-  // -------- connect / recreate echo (token change) ----------
+  // -------- connect / recreate echo (ONLY when token changes) ----------
   useEffect(() => {
     const isReverb = String(backendKind || '').toLowerCase() === 'reverb';
     const bearer = toBearer(token);
@@ -104,11 +116,9 @@ export default function useGlobalWebSocket({
     const host = import.meta.env.VITE_REVERB_HOST || window.location.hostname;
     const port = Number(import.meta.env.VITE_REVERB_PORT || 8080);
 
-    // IMPORTANT: این URL باید همون جایی باشه که Laravel API سرو میشه
     const apiBase =
       import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
 
-    // IMPORTANT: چون الان route توی /api/broadcasting/auth داریم
     const authEndpoint = `${apiBase}/api/broadcasting/auth`;
 
     if (!appKey) {
@@ -118,6 +128,7 @@ export default function useGlobalWebSocket({
       return;
     }
 
+    // ✅ recreate only if bearer changed
     const tokenSig = bearer;
     const needRecreate = !globalEcho || echoTokenSig !== tokenSig;
 
@@ -151,13 +162,14 @@ export default function useGlobalWebSocket({
         window.__echo = globalEcho;
         echoTokenSig = tokenSig;
 
-        if (LOG)
+        if (LOG) {
           console.log('[GlobalWS] Echo created', {
             debugLabel,
             wsHost: host,
             wsPort: port,
             authEndpoint,
           });
+        }
       } catch (e) {
         const msg = e?.message || 'Error creating Echo';
         dispatch(wsError(msg));
@@ -178,7 +190,7 @@ export default function useGlobalWebSocket({
           setState((s) => ({ ...s, backend: 'reverb', status: 'disconnected' }));
           dispatch(wsDisconnected());
 
-          // اجازه بده دوباره join کنند
+          // اجازه بده دوباره join/subscription بعد از reconnect انجام شود
           presenceJoinedRef.current = false;
           notifSubscribedRef.current = false;
           notifChannelNameRef.current = null;
@@ -252,7 +264,7 @@ export default function useGlobalWebSocket({
     };
   }, [backendKind, token, state.status, dispatch, shouldPresence]);
 
-  // -------- notifications (optional) ----------
+  // -------- ✅ user notifications (private-user.{id}) ----------
   useEffect(() => {
     const isReverb = String(backendKind || '').toLowerCase() === 'reverb';
     const bearer = toBearer(token);
@@ -261,9 +273,10 @@ export default function useGlobalWebSocket({
     if (!shouldNotifications) return;
     if (!globalEcho) return;
     if (state.status !== 'connected') return;
+    if (!userPrivateChannel) return;
 
     // اگر قبلاً روی همین کانال subscribe شده، هیچ کاری نکن
-    if (notifSubscribedRef.current && notifChannelNameRef.current === globalNotificationsChannel) {
+    if (notifSubscribedRef.current && notifChannelNameRef.current === userPrivateChannel) {
       return;
     }
 
@@ -277,7 +290,8 @@ export default function useGlobalWebSocket({
     }
 
     try {
-      const ch = globalEcho.channel(globalNotificationsChannel);
+      // ✅ private channel for this user
+      const ch = globalEcho.private(userPrivateChannel);
 
       ch.listen('.NotificationCreated', (packet) => {
         try {
@@ -286,21 +300,28 @@ export default function useGlobalWebSocket({
       });
 
       notifSubscribedRef.current = true;
-      notifChannelNameRef.current = globalNotificationsChannel;
+      notifChannelNameRef.current = userPrivateChannel;
 
-      if (LOG) console.log('[GlobalWS] notifications subscribed', globalNotificationsChannel);
+      if (LOG) console.log('[GlobalWS] user notifications subscribed', userPrivateChannel);
     } catch (e) {
-      dispatch(wsError(e?.message || 'Notifications subscribe failed'));
+      dispatch(wsError(e?.message || 'User notifications subscribe failed'));
     }
 
     return () => {
       try {
-        globalEcho?.leave(globalNotificationsChannel);
+        globalEcho?.leave(userPrivateChannel);
       } catch {}
       notifSubscribedRef.current = false;
       notifChannelNameRef.current = null;
     };
-  }, [backendKind, token, state.status, dispatch, shouldNotifications, globalNotificationsChannel]);
+  }, [
+    backendKind,
+    token,
+    state.status,
+    dispatch,
+    shouldNotifications,
+    userPrivateChannel,
+  ]);
 
   return {
     backend: state.backend,

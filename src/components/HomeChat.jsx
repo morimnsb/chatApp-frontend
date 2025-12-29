@@ -1,9 +1,12 @@
 // src/components/HomeChat.jsx
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+
 import { useDispatch, useSelector } from 'react-redux';
 import { Container, Row, Col, Spinner, Alert, Badge } from 'react-bootstrap';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+
+import { updateMessages, clearUnreadCount, selectRoom } from '@/actions/messageActions';
 
 import './HomeChat.css';
 
@@ -26,8 +29,6 @@ import {
   selectError,
   selectTypingIndicators,
 } from '@/selectors/messageSelectors';
-
-import { clearUnreadCount, selectRoom } from '@/actions/messageActions';
 
 import {
   useGetMeQuery,
@@ -153,28 +154,120 @@ const HomeChat = () => {
   const bareToken = rawToken.toString().replace(/^Bearer\s+/i, '');
 
   const backendKind = String(effectiveKind || '').toLowerCase();
-
   const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
-
-  // فقط برای دیباگ Toast وقتی Reverb فعاله
-  const enableReverbEcho = backendKind === 'reverb' && Boolean(bareToken);
 
   // Auth bootstrap (legacy / HTTP)
   useCurrentUser({ accessToken: bareToken, effectiveKind, endpoints });
 
-  // ✅ Global WS: فقط Presence (online users) — نوتیفیکیشن خاموش تا loop قطع شود
-  const globalWs = useGlobalWebSocket({
-  backendKind: effectiveKind,
-  token: bareToken, // ✅ نه accessToken
-  onOnlineUsersChange: (next) => {
-    setOnlineUsers((prev) => (typeof next === 'function' ? next(prev) : next));
-  },
-  enableGlobalNotifications: true,
-  handleGlobalNotification: (packet) => {
-    console.log('GLOBAL NOTIF', packet);
-  },
-});
+  /* ------------------------------------------------------------------
+   * 🔔 Global Notifications helpers (sound + desktop + redux update)
+   * ------------------------------------------------------------------ */
 
+  const notifyAudioRef = useRef(null);
+  const lastGlobalNotifyAtRef = useRef(0);
+
+  useEffect(() => {
+    // فقط یکبار
+    notifyAudioRef.current = new Audio('/sounds/incoming.mp3');
+
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, []);
+
+  const showDesktopNotification = useCallback((title, body, onClick) => {
+    try {
+      if (!('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+      if (!document.hidden) return;
+
+      const n = new Notification(title || 'New message', {
+        body: body || '',
+      });
+
+      if (onClick) {
+        n.onclick = (e) => {
+          e.preventDefault();
+          window.focus();
+          onClick?.();
+          n.close();
+        };
+      }
+    } catch {}
+  }, []);
+
+  const onGlobalNotif = useCallback(
+    (packet) => {
+      // مثال packet واقعی شما:
+      // { type:'notify_message', room_id:1, message_id:45, from_user:{...}, text:'i', created_at:'...' }
+
+      console.log('GLOBAL NOTIF', packet);
+
+      if (!packet || packet.type !== 'notify_message') return;
+
+      const roomId = Number(packet.room_id || 0);
+      if (!roomId) return;
+
+      const fromId = Number(packet.from_user?.id || 0);
+      const fromName =
+        packet.from_user?.name ||
+        packet.from_user?.first_name ||
+        packet.from_user?.email ||
+        `User ${fromId || ''}`;
+
+      const text = String(packet.text || packet.message?.content || 'New message');
+
+      // اگر همین روم بازه، نوتیف سنگین نده (چون کاربر می‌بینه)
+      const isActiveRoom = Number(selectedRoom) === roomId;
+
+      // ✅ anti-spam ساده (مثلاً هر 900ms یکبار)
+      const now = Date.now();
+      if (!isActiveRoom && now - lastGlobalNotifyAtRef.current > 900) {
+        lastGlobalNotifyAtRef.current = now;
+
+        toast.info(`${fromName}: ${text}`, {
+          toastId: `notif-${packet.message_id || now}`,
+        });
+
+        notifyAudioRef.current?.play().catch(() => {});
+        showDesktopNotification(fromName, text);
+      }
+
+      // ✅ Redux update: یک packet شبیه message بساز تا dmList/preview/unread logic شما فعال شود
+      // (اگر reducer شما unread را بالا ببرد، اینجا نتیجه‌اش را می‌بینید)
+      dispatch(
+        updateMessages({
+          type: 'message',
+          room_id: roomId,
+          message: {
+            id: packet.message_id || `notif-${now}`,
+            room_id: roomId,
+            sender_id: fromId,
+            sender_name: fromName,
+            content: text,
+            created_at: packet.created_at || new Date().toISOString(),
+          },
+          meta: { via: 'global-notif', unread: !isActiveRoom },
+        }),
+      );
+    },
+    [dispatch, selectedRoom, showDesktopNotification],
+  );
+
+  /* ------------------------------------------------------------------
+   * ✅ Global WS: Presence + Notifications
+   * ------------------------------------------------------------------ */
+
+  const globalWs = useGlobalWebSocket({
+    backendKind: effectiveKind,
+    token: bareToken,
+    currentUserId,
+    onOnlineUsersChange: (next) => {
+      setOnlineUsers((prev) => (typeof next === 'function' ? next(prev) : next));
+    },
+    enableGlobalNotifications: true,
+    handleGlobalNotification: onGlobalNotif,
+  });
 
   // RTK Query (me + users)
   const meQ = useGetMeQuery(undefined, { skip: !bareToken });
@@ -310,7 +403,6 @@ const HomeChat = () => {
   /* ---------- Minimal WS debug (کم لاگ) ---------- */
 
   useEffect(() => {
-    // فقط وقتی status یا error تغییر می‌کند
     if (globalWs.status === 'connected') {
       toast.success('GlobalWS connected', { toastId: 'gws-connected' });
     }
