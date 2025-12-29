@@ -1,5 +1,5 @@
 // src/components/MessageList.jsx
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import { ListGroup, Button, Spinner } from 'react-bootstrap';
 import axios from 'axios';
 import { formatTime } from '@/utils/formatTime';
@@ -13,9 +13,8 @@ const MessageList = ({
   handleSelectChat,
   selectedRoom,
   typingIndicators = {},
-  onRespondFriendRequest, // 👈 برای accept/reject
+  onRespondFriendRequest, // accept/reject
 }) => {
-  // local ui state برای ساخت گروه (اگر فعلاً می‌خوای نگه داریش)
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
 
@@ -29,12 +28,14 @@ const MessageList = ({
     [filteredGroupMessages],
   );
 
-  const renderTypingIndicator = (userId) => {
-    const isTyping = typingIndicators[userId];
-    return isTyping ? 'is typing...' : null;
-  };
+  const renderTypingIndicator = useCallback(
+    (userId) => {
+      const isTyping = typingIndicators?.[userId];
+      return isTyping ? 'is typing...' : null;
+    },
+    [typingIndicators],
+  );
 
-  // --- ایجاد گروه جدید (همون قبلی) ---
   const handleCreateGroup = async () => {
     setCreating(true);
     setCreateError('');
@@ -42,10 +43,10 @@ const MessageList = ({
     try {
       const token = localStorage.getItem('access_token');
 
-      const body = {
-        name: 'New Group Chat',
-        is_group: true,
-      };
+const body = {
+  name: 'ias: New Group Chat',
+  is_group: true,
+};
 
       const res = await axios.post('http://localhost:8000/api/rooms', body, {
         headers: {
@@ -55,14 +56,11 @@ const MessageList = ({
         },
       });
 
-      console.log('GROUP CREATED ✅:', res.data);
-
       if (res.data?.room?.id) {
         handleSelectChat(res.data.room.id);
       }
     } catch (err) {
-      console.error('CREATE GROUP ERROR ❌:', err);
-      if (err.response && err.response.data) {
+      if (err?.response?.data) {
         setCreateError(
           typeof err.response.data === 'string'
             ? err.response.data
@@ -85,7 +83,6 @@ const MessageList = ({
 
       {individualMessages.length > 0 ? (
         individualMessages.map((convo) => {
-          // 👇 این‌ها را از normalizeDmList و بک‌اند می‌گیری
           const roomId = convo.roomId || convo.room_id || convo.id;
           const userId = convo.partnerId || convo.user_id || convo.id;
 
@@ -108,9 +105,9 @@ const MessageList = ({
 
           const isActive = selectedRoom === roomId;
 
-          // 👇 وضعیت دوستی از بک‌اند (همونی که تو لاگ دیدی)
           const friendshipStatus = convo.friendship_status;
           const friendshipId = convo.friendship_id;
+
           const isFriendReqIncoming = friendshipStatus === 'pending_incoming';
           const isFriendReqOutgoing = friendshipStatus === 'pending_outgoing';
 
@@ -119,33 +116,31 @@ const MessageList = ({
             userId != null &&
             Number(currentUser.id) === Number(userId);
 
-          // --- متن زیر نام: ---
-          let subtitle;
-          if (isFriendReqIncoming) {
-            subtitle = 'sent you a friend request';
-          } else if (isFriendReqOutgoing) {
-            subtitle = 'Friend request sent';
-          } else if (lastMsg) {
-            subtitle = lastMsg.content;
-          } else {
-            subtitle = '';
-          }
+          let subtitle = '';
+          if (isFriendReqIncoming) subtitle = 'sent you a friend request';
+          else if (isFriendReqOutgoing) subtitle = 'Friend request sent';
+          else if (lastMsg) subtitle = lastMsg.content || '';
+          else subtitle = '';
 
+          // ✅ مهم: ListGroup.Item دیگه action نیست (button نشه)
+          // ✅ کلیک‌پذیری روی div داخلی
           return (
             <ListGroup.Item
-              key={`dm-${roomId || userId}`} // 👈 برای حذف هشدار key
-              action
-              active={isActive}
-              onClick={() => handleSelectChat(roomId, userId)}
-              className="message-list-item"
+              key={`dm-${roomId || userId}`}
+              className={`message-list-item p-0 ${isActive ? 'active' : ''}`}
             >
-              <div className="message-row">
+              <div
+                role="button"
+                tabIndex={0}
+                className="message-row w-100"
+                style={{ cursor: 'pointer' }}
+                onClick={() => handleSelectChat(roomId, userId)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSelectChat(roomId, userId);
+                }}
+              >
                 <div className="message-content">
-                  <img
-                    src={avatar}
-                    alt={displayName}
-                    className="profile-img"
-                  />
+                  <img src={avatar} alt={displayName} className="profile-img" />
                   {convo.is_online && <span className="online-status"></span>}
                 </div>
 
@@ -165,10 +160,10 @@ const MessageList = ({
                   </div>
 
                   <div className="message-details">
-                    {/* اگر درخواست دوستی incoming هست → دکمه‌ها */}
                     {isFriendReqIncoming && friendshipId ? (
-                      <div className="d-flex align-items-center gap-2">
+                      <div className="d-flex align-items-center gap-2 w-100">
                         <span className="subtext">{subtitle}</span>
+
                         {onRespondFriendRequest && (
                           <div className="d-flex gap-1 ms-auto">
                             <Button
@@ -184,6 +179,7 @@ const MessageList = ({
                             >
                               Accept
                             </Button>
+
                             <Button
                               variant="outline-danger"
                               size="sm"
@@ -202,12 +198,10 @@ const MessageList = ({
                       </div>
                     ) : (
                       <>
-                        {/* حالت‌های دیگر: یا تایپینگ، یا متن آخرین پیام */}
                         {renderTypingIndicator(userId) || (
                           <span className="subtext">{subtitle}</span>
                         )}
 
-                        {/* unread count مثل قبل */}
                         {convo.unread_count > 0 && (
                           <span className="unread_count">
                             {convo.unread_count}
@@ -257,9 +251,7 @@ const MessageList = ({
 
       {createError && (
         <ListGroup.Item className="create-error">
-          <span style={{ color: 'red', fontSize: '0.8rem' }}>
-            {createError}
-          </span>
+          <span style={{ color: 'red', fontSize: '0.8rem' }}>{createError}</span>
         </ListGroup.Item>
       )}
 
@@ -267,13 +259,21 @@ const MessageList = ({
       {groupMessages.length > 0 ? (
         groupMessages.map((room) => (
           <ListGroup.Item
-            key={`group-${room.id}`} // 👈 prefix برای جلوگیری از key تکراری
-            action
-            active={selectedRoom === room.id}
-            onClick={() => handleSelectChat(room.id)}
-            className="message-list-item"
+            key={`group-${room.id}`}
+            className={`message-list-item p-0 ${
+              selectedRoom === room.id ? 'active' : ''
+            }`}
           >
-            <div className="message-row">
+            <div
+              role="button"
+              tabIndex={0}
+              className="message-row w-100"
+              style={{ cursor: 'pointer' }}
+              onClick={() => handleSelectChat(room.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSelectChat(room.id);
+              }}
+            >
               <div className="message-content">
                 <img
                   src={room.photo || profilephoto1}
@@ -296,9 +296,7 @@ const MessageList = ({
                 </div>
 
                 <div className="message-details">
-                  <span className="subtext">
-                    {room.last_message?.content}
-                  </span>
+                  <span className="subtext">{room.last_message?.content}</span>
 
                   {room.unread_count > 0 && (
                     <span className="unread_count">{room.unread_count}</span>

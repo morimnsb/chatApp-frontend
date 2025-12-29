@@ -1,15 +1,18 @@
 // src/hooks/useReverbEcho.js
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useDispatch } from 'react-redux';
 import { wsConnected, wsDisconnected, wsError } from '@/store/wsActions';
 
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
-window.Pusher = Pusher;
+const WS_DEBUG_PREFIX = '[ReverbWS]';
+const LOG = Boolean(import.meta.env.VITE_WS_DEBUG) && import.meta.env.DEV;
 
-const WS_DEBUG_PREFIX = '[Reverb WS]';
+const stripBearer = (t) => String(t || '').replace(/^Bearer\s+/i, '').trim();
+
 let echoInstance = null;
+let echoTokenSig = null;
 
 export default function useReverbEcho({
   enabled,
@@ -18,31 +21,49 @@ export default function useReverbEcho({
 } = {}) {
   const dispatch = useDispatch();
 
+  // keep latest props for logs
+  const labelRef = useRef(debugLabel);
   useEffect(() => {
-    console.log(WS_DEBUG_PREFIX, 'effect start', {
-      enabled,
-      hasToken: !!token,
-      debugLabel,
-    });
+    labelRef.current = debugLabel;
+  }, [debugLabel]);
 
-    if (!enabled) {
-      console.log(WS_DEBUG_PREFIX, 'disabled → disconnect if exists');
-      if (echoInstance) {
-        try {
-          echoInstance.disconnect();
-        } catch (e) {
-          console.error(WS_DEBUG_PREFIX, 'error on disconnect old echo', e);
-        }
-        echoInstance = null;
-        window.__echo = undefined;
-      }
-      dispatch(wsDisconnected());
-      return;
+  useEffect(() => {
+    // Pusher global (once)
+    if (typeof window !== 'undefined' && !window.Pusher) {
+      window.Pusher = Pusher;
     }
 
-    if (!token) {
-      console.warn(WS_DEBUG_PREFIX, 'enabled BUT no token → skip connect');
-      dispatch(wsError('No token for Reverb auth'));
+    const isEnabled = !!enabled;
+    const bare = stripBearer(token);
+    const hasToken = !!bare;
+
+    if (LOG) {
+      console.log(WS_DEBUG_PREFIX, 'effect', {
+        debugLabel,
+        enabled: isEnabled,
+        hasToken,
+      });
+    }
+
+    // helper: dispose
+    const dispose = () => {
+      if (!echoInstance) return;
+      try {
+        echoInstance.disconnect();
+      } catch (e) {
+        if (LOG) console.warn(WS_DEBUG_PREFIX, 'disconnect error', e);
+      }
+      echoInstance = null;
+      echoTokenSig = null;
+      if (typeof window !== 'undefined') window.__echo = undefined;
+      dispatch(wsDisconnected());
+      if (LOG) console.log(WS_DEBUG_PREFIX, 'disposed', labelRef.current);
+    };
+
+    if (!isEnabled || !hasToken) {
+      if (!isEnabled && LOG) console.log(WS_DEBUG_PREFIX, 'disabled → dispose');
+      if (isEnabled && !hasToken) dispatch(wsError('No token for Reverb auth'));
+      dispose();
       return;
     }
 
@@ -50,118 +71,98 @@ export default function useReverbEcho({
     const host = import.meta.env.VITE_REVERB_HOST || window.location.hostname;
     const port = Number(import.meta.env.VITE_REVERB_PORT || 8080);
     const apiBase =
-      import.meta.env.VITE_API_URL?.replace(/\/+$/, '') ||
-      'http://localhost:8000';
-
-    console.log(WS_DEBUG_PREFIX, 'creating Echo instance with config:', {
-      appKey,
-      host,
-      port,
-      apiBase,
-    });
+      import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
 
     if (!appKey) {
-      console.error(WS_DEBUG_PREFIX, '❌ VITE_REVERB_APP_KEY is missing');
       dispatch(wsError('Missing VITE_REVERB_APP_KEY'));
       return;
     }
 
-    if (echoInstance) {
-      try {
-        echoInstance.disconnect();
-      } catch (e) {
-        console.error(WS_DEBUG_PREFIX, 'error on disconnect old echo', e);
-      }
-      echoInstance = null;
-      window.__echo = undefined;
+    // signature prevents re-create loops
+    const tokenSig = `Bearer ${bare}`;
+    const needRecreate = !echoInstance || echoTokenSig !== tokenSig;
+
+    if (!needRecreate) {
+      // already have a valid echo
+      if (LOG) console.log(WS_DEBUG_PREFIX, 'reuse existing echo', labelRef.current);
+      return;
+    }
+
+    // recreate
+    dispose();
+
+    if (LOG) {
+      console.log(WS_DEBUG_PREFIX, 'creating Echo', {
+        debugLabel,
+        host,
+        port,
+        apiBase,
+        authEndpoint: `${apiBase}/api/broadcasting/auth`,
+      });
     }
 
     try {
       echoInstance = new Echo({
         broadcaster: 'pusher',
         key: appKey,
+
         wsHost: host,
         wsPort: port,
         wssPort: port,
+
         forceTLS: false,
         enabledTransports: ['ws'],
         disabledTransports: ['xhr_polling', 'xhr_streaming'],
         cluster: 'mt1',
-        authEndpoint: `${apiBase}/broadcasting/auth`,
+
+        // ✅ شما الان route را زیر api هم داری + middleware=auth:sanctum
+        authEndpoint: `${apiBase}/api/broadcasting/auth`,
+
         auth: {
           headers: {
-            Authorization: `Bearer ${token}`,
+            Authorization: tokenSig,
             Accept: 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
           },
         },
       });
 
-      // 🔥 این خط باید اجرا بشه
+      echoTokenSig = tokenSig;
       window.__echo = echoInstance;
-      console.log(WS_DEBUG_PREFIX, 'window.__echo set =', !!window.__echo);
 
-      const pusher = echoInstance.connector?.pusher;
+      const conn = echoInstance?.connector?.pusher?.connection;
 
-      if (!pusher || !pusher.connection) {
-        console.error(
-          WS_DEBUG_PREFIX,
-          'pusher.connection is missing – check Echo config',
-        );
+      if (!conn) {
+        dispatch(wsError('Reverb: pusher connection missing'));
       } else {
-        pusher.connection.bind('connected', () => {
-          console.log(WS_DEBUG_PREFIX, '>> CONNECTION CONNECTED');
+        conn.bind('connected', () => {
+          if (LOG) console.log(WS_DEBUG_PREFIX, 'connected', labelRef.current);
           dispatch(wsConnected());
         });
 
-        pusher.connection.bind('disconnected', () => {
-          console.log(WS_DEBUG_PREFIX, '>> CONNECTION DISCONNECTED');
+        conn.bind('disconnected', () => {
+          if (LOG) console.log(WS_DEBUG_PREFIX, 'disconnected', labelRef.current);
           dispatch(wsDisconnected());
         });
 
-        pusher.connection.bind('error', (err) => {
-          console.error(WS_DEBUG_PREFIX, '>> CONNECTION ERROR', err);
+        conn.bind('error', (err) => {
+          if (LOG) console.warn(WS_DEBUG_PREFIX, 'error', err);
           dispatch(wsError(err?.data || err?.message || 'WS connection error'));
         });
 
-        pusher.connection.bind('failed', (err) => {
-          console.error(WS_DEBUG_PREFIX, '>> CONNECTION FAILED', err);
-          dispatch(
-            wsError(err?.data || err?.message || 'WS connection failed'),
-          );
+        conn.bind('failed', (err) => {
+          if (LOG) console.warn(WS_DEBUG_PREFIX, 'failed', err);
+          dispatch(wsError(err?.data || err?.message || 'WS connection failed'));
         });
       }
-
-      try {
-        const testChannel = echoInstance.channel('public.test');
-        console.log(
-          WS_DEBUG_PREFIX,
-          'subscribed to test channel:',
-          testChannel,
-        );
-      } catch (e) {
-        console.warn(
-          WS_DEBUG_PREFIX,
-          'could not subscribe to test channel (ok if not exists)',
-          e,
-        );
-      }
     } catch (e) {
-      console.error(WS_DEBUG_PREFIX, '❌ error creating Echo instance', e);
       dispatch(wsError(e?.message || 'Error creating Echo instance'));
+      dispose();
     }
 
     return () => {
-      console.log(WS_DEBUG_PREFIX, 'cleanup effect (unmount / deps change)');
-      if (echoInstance) {
-        try {
-          echoInstance.disconnect();
-        } catch (e) {
-          console.error(WS_DEBUG_PREFIX, 'error on cleanup disconnect', e);
-        }
-        echoInstance = null;
-        window.__echo = undefined;
-      }
-      dispatch(wsDisconnected());
+      if (LOG) console.log(WS_DEBUG_PREFIX, 'cleanup', labelRef.current);
+      dispose();
     };
-  }, [enabled, token, dispatch, debugLabel]);
+  }, [enabled, token, dispatch]);
 }

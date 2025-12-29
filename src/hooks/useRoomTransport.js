@@ -2,132 +2,119 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 
 const RT_DEBUG = '[RoomTransport]';
+const DEFAULT_TYPING_THROTTLE_MS = 800;
 
 export default function useRoomTransport({
   backendKind,
   roomId,
-  accessToken, // فعلاً برای Reverb مستقیم استفاده نمی‌کنیم، ولی می‌مونه
+  accessToken, // unused here (keep for future)
   handleNotification,
   currentUserId,
+  typingThrottleMs = DEFAULT_TYPING_THROTTLE_MS,
 }) {
+  const backend = String(backendKind || '').toLowerCase();
+
   const [status, setStatus] = useState('off');
   const [connectionLabel, setConnectionLabel] = useState('—');
 
-  const backend = String(backendKind || '').toLowerCase();
+  const notifyRef = useRef(handleNotification);
+  useEffect(() => {
+    notifyRef.current = handleNotification;
+  }, [handleNotification]);
 
-  // برای جلوگیری از re-subscribe بی‌خودی
-  const subscribedRoomRef = useRef(null);
+  const subscribedRef = useRef(null);
+
+  const safeNotify = useCallback((packet) => {
+    try {
+      notifyRef.current?.(packet);
+    } catch (e) {
+      console.error(RT_DEBUG, 'handleNotification error', e);
+    }
+  }, []);
+
+  // ✅ your server logs show: private-chat.1 (wire)
+  // Echo private('chat.1')  => wire: private-chat.1
+  const channelName = roomId ? `chat.${roomId}` : null;
 
   /* ------------------------------------------------------------------
-   *  🔌 Reverb (Laravel)
+   * 🔌 subscribe
    * ------------------------------------------------------------------ */
-
   useEffect(() => {
     if (backend !== 'reverb') {
-      if (status !== 'off') {
-        console.log(RT_DEBUG, '[Reverb] backend != reverb → turning off', {
-          backend,
-        });
-      }
+      subscribedRef.current = null;
       setStatus('off');
-      setConnectionLabel('WS off (backend != reverb)');
+      setConnectionLabel('WS off');
       return;
     }
 
     if (!roomId) {
-      console.log(RT_DEBUG, '[Reverb] no roomId → cannot subscribe');
+      subscribedRef.current = null;
       setStatus('idle');
-      setConnectionLabel('No roomId');
+      setConnectionLabel('Waiting for room…');
+      return;
+    }
+
+    if (!currentUserId) {
+      subscribedRef.current = null;
+      setStatus('idle');
+      setConnectionLabel('Waiting for user…');
       return;
     }
 
     const echo = window.__echo;
-    console.log(RT_DEBUG, '[Reverb] effect start', {
-      roomId,
-      hasEcho: !!echo,
-      backend,
-    });
-
     if (!echo) {
-      console.warn(
-        RT_DEBUG,
-        '[Reverb] window.__echo is missing – global Reverb not ready',
-      );
+      console.warn(RT_DEBUG, '[Reverb] window.__echo missing');
       setStatus('error-no-echo');
       setConnectionLabel('Reverb: no echo');
       return;
     }
 
-    const channelName = `chat.${roomId}`;
-
-    // اگر قبلاً روی همین اتاق subscribe شده‌ایم، دوباره نرو
-    if (subscribedRoomRef.current === channelName) {
-      console.log(RT_DEBUG, '[Reverb] already subscribed to', channelName);
+    if (subscribedRef.current === channelName) {
       setStatus('connected');
-      setConnectionLabel(`Reverb chat.${roomId}`);
+      setConnectionLabel(`Reverb ${channelName}`);
       return;
     }
 
     setStatus('subscribing');
-    setConnectionLabel(`Reverb: subscribing chat.${roomId}`);
+    setConnectionLabel(`Reverb: subscribing ${channelName}`);
 
-    let channel;
-
+    let ch;
     try {
-      channel = echo.channel(channelName);
-      console.log(
-        RT_DEBUG,
-        '[Reverb] subscribed to',
-        channelName,
-        '→ channel =',
-        channel,
-      );
-      subscribedRoomRef.current = channelName;
+      ch = echo.private(channelName);
+      subscribedRef.current = channelName;
+      console.log(RT_DEBUG, '[Reverb] subscribed', channelName);
     } catch (e) {
-      console.error(RT_DEBUG, '[Reverb] error subscribing to', channelName, e);
+      console.error(RT_DEBUG, '[Reverb] subscribe failed', e);
       setStatus('error-subscribe');
-      setConnectionLabel(`Reverb: subscribe error chat.${roomId}`);
+      setConnectionLabel(`Reverb: subscribe error ${channelName}`);
       return;
     }
 
-    // 🎧 اینجا eventهایی که از backend می‌آد رو گوش می‌دیم
-    // اسامی رو باید با Laravel هماهنگ کنی
+    // ✅ Server broadcast event for new messages
+    // Backend must broadcastAs('ChatMessageCreated') or event name 'ChatMessageCreated'
+    const onMessage = (payload) => {
+      console.log(RT_DEBUG, '[Reverb] message event received', payload);
 
-    channel
-      // مثلا: Broadcast::event(new ChatMessageBroadcasted(...))->broadcastAs('ChatMessage')
-      .listen('.ChatMessage', (packet) => {
-        console.log(RT_DEBUG, '[Reverb] .ChatMessage event received', packet);
-        handleNotification?.(packet);
-      })
-      .listen('.ChatMessageBroadcasted', (packet) => {
-        console.log(
-          RT_DEBUG,
-          '[Reverb] .ChatMessageBroadcasted event received',
-          packet,
-        );
-        handleNotification?.(packet);
-      })
-      .listen('.TypingIndicator', (packet) => {
-        console.log(
-          RT_DEBUG,
-          '[Reverb] .TypingIndicator event received',
-          packet,
-        );
-        handleNotification?.(packet);
-      })
-      .listen('.MessageReceived', (packet) => {
-        console.log(
-          RT_DEBUG,
-          '[Reverb] .MessageReceived event received',
-          packet,
-        );
-        handleNotification?.(packet);
-      });
+      safeNotify(
+        payload?.type
+          ? payload
+          : {
+              type: 'message',
+              message: payload?.message || payload,
+            },
+      );
+    };
 
-    // برای دیباگ: همه ی eventها
-    channel.listenForWhisper('typing', (payload) => {
-      console.log(RT_DEBUG, '[Reverb] whisper:typing received', payload);
-      handleNotification?.({
+    // primary (your intended)
+    ch.listen('.ChatMessageCreated', onMessage);
+
+    // fallback (if backend didn’t broadcastAs, sometimes Echo uses default event name)
+    // (safe: if it doesn't exist, nothing happens)
+    ch.listen('ChatMessageCreated', onMessage);
+
+    // ✅ typing is PURE whisper (keep as-is)
+    ch.listenForWhisper('typing', (payload) => {
+      safeNotify({
         type: 'typing_indicator',
         room_id: roomId,
         user_id: payload?.user_id,
@@ -135,169 +122,101 @@ export default function useRoomTransport({
     });
 
     setStatus('connected');
-    setConnectionLabel(`Reverb chat.${roomId}`);
+    setConnectionLabel(`Reverb ${channelName}`);
 
     return () => {
       console.log(RT_DEBUG, '[Reverb] cleanup leave', channelName);
       try {
+        ch?.stopListening('.ChatMessageCreated');
+        ch?.stopListening('ChatMessageCreated');
+      } catch {}
+      try {
         echo.leave(channelName);
-      } catch (e) {
-        console.error(RT_DEBUG, '[Reverb] error on leave', channelName, e);
-      }
-      if (subscribedRoomRef.current === channelName) {
-        subscribedRoomRef.current = null;
-      }
+      } catch {}
+      if (subscribedRef.current === channelName) subscribedRef.current = null;
       setStatus('idle');
       setConnectionLabel('Reverb: idle');
     };
-  }, [backend, roomId, handleNotification, status]);
+  }, [backend, roomId, currentUserId, channelName, safeNotify]);
 
   /* ------------------------------------------------------------------
-   *  ✉️ sendMessage → فقط WebSocket (Reverb)
+   * ✉️ sendMessage (client event -> backend should save + broadcast)
    * ------------------------------------------------------------------ */
+  // inside useRoomTransport.js
 
-  const sendMessage = useCallback(
-    async (text) => {
-      const trimmed = String(text || '').trim();
-      if (!trimmed) {
-        console.log(RT_DEBUG, 'sendMessage called with empty text – ignore');
-        return;
-      }
+const API =
+  import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
 
-      console.log(RT_DEBUG, 'sendMessage called', {
-        backend,
-        roomId,
-        currentUserId,
-        text: trimmed,
-      });
+const stripBearer = (t) => String(t || '').replace(/^Bearer\s+/i, '').trim();
 
-      if (!roomId) {
-        console.warn(RT_DEBUG, 'sendMessage without roomId – abort');
-        throw new Error('No roomId for sendMessage');
-      }
+const sendMessage = useCallback(
+  async (text) => {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return;
 
-      if (backend === 'reverb') {
-        const echo = window.__echo;
-        if (!echo) {
-          console.error(
-            RT_DEBUG,
-            '[Reverb] sendMessage – no window.__echo, cannot send',
-          );
-          throw new Error('Reverb not connected (no echo)');
-        }
+    if (backend !== 'reverb') throw new Error(`Unsupported backend: ${backend}`);
+    if (!roomId) throw new Error('No roomId for sendMessage');
+    if (!currentUserId) throw new Error('No currentUserId for sendMessage');
 
-        const pusher = echo.connector?.pusher;
-        console.log(RT_DEBUG, '[Reverb] pusher in sendMessage', {
-          hasPusher: !!pusher,
-          connectionState: pusher?.connection?.state,
-        });
+    const token = stripBearer(accessToken);
+    if (!token) throw new Error('No access token');
 
-        if (!pusher) {
-          throw new Error('Reverb pusher connector missing');
-        }
+    // ✅ این endpoint باید در Laravel وجود داشته باشد
+    const url = `${API}/api/chat/rooms/${roomId}/messages`;
 
-        const channelName = `chat.${roomId}`;
-        const payload = {
-          content: trimmed,
-          user_id: currentUserId ?? null,
-          room_id: roomId,
-        };
+    console.log(RT_DEBUG, '[HTTP] sendMessage', { url, roomId, textLen: trimmed.length });
 
-        console.log(RT_DEBUG, '[Reverb] send_event payload', {
-          event: 'ClientChatMessage',
-          channelName,
-          payload,
-        });
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({ content: trimmed }),
+    });
 
-        try {
-          pusher.send_event('ClientChatMessage', payload, channelName);
-          console.log(RT_DEBUG, '[Reverb] send_event dispatched OK');
-        } catch (e) {
-          console.error(RT_DEBUG, '[Reverb] send_event FAILED', e);
-          throw e;
-        }
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      throw new Error(`sendMessage failed ${resp.status}: ${body.slice(0, 200)}`);
+    }
 
-        return;
-      }
+    // اختیاری: اگر backend پیام را برگرداند
+    // const data = await resp.json().catch(() => null);
+    // console.log(RT_DEBUG, '[HTTP] sendMessage OK', data);
+  },
+  [backend, roomId, currentUserId, accessToken],
+);
 
-      if (backend === 'django') {
-        console.log(
-          RT_DEBUG,
-          '[Django] sendMessage – not implemented yet (you will adapt it)',
-          { roomId, text: trimmed },
-        );
-        throw new Error('Django WS sendMessage not implemented yet');
-      }
-
-      console.warn(RT_DEBUG, 'sendMessage called with unsupported backend', {
-        backend,
-      });
-      throw new Error(`Unsupported backend: ${backend}`);
-    },
-    [backend, roomId, currentUserId],
-  );
 
   /* ------------------------------------------------------------------
-   *  ⌨️ sendTyping → WebSocket
+   * ⌨️ sendTyping (PURE whisper, no DB, no backend listener)  ✅ DO NOT CHANGE
    * ------------------------------------------------------------------ */
+  const lastTypingSentAtRef = useRef(0);
 
   const sendTyping = useCallback(
     (userId) => {
-      console.log(RT_DEBUG, 'sendTyping called', {
-        backend,
-        roomId,
-        userId,
-      });
+      if (backend !== 'reverb') return false;
+      if (!roomId || !userId) return false;
 
-      if (!userId || !roomId) return;
+      const now = Date.now();
+      if (now - lastTypingSentAtRef.current < typingThrottleMs) return false;
+      lastTypingSentAtRef.current = now;
 
-      if (backend === 'reverb') {
-        const echo = window.__echo;
-        const pusher = echo?.connector?.pusher;
-        if (!pusher) {
-          console.warn(
-            RT_DEBUG,
-            '[Reverb] sendTyping – no pusher, skip typing event',
-          );
-          return;
-        }
+      const echo = window.__echo;
+      if (!echo) return false;
 
-        const channelName = `chat.${roomId}`;
-        const payload = {
-          room_id: roomId,
-          user_id: userId,
-        };
-
-        console.log(RT_DEBUG, '[Reverb] send_event typing payload', {
-          event: 'ClientTyping',
-          channelName,
-          payload,
-        });
-
-        try {
-          pusher.send_event('ClientTyping', payload, channelName);
-          console.log(RT_DEBUG, '[Reverb] typing send_event dispatched OK');
-        } catch (e) {
-          console.error(RT_DEBUG, '[Reverb] typing send_event FAILED', e);
-        }
-        return;
-      }
-
-      if (backend === 'django') {
-        console.log(
-          RT_DEBUG,
-          '[Django] sendTyping – not implemented yet (ok for now)',
-        );
-        return;
+      try {
+        echo.private(channelName).whisper('typing', { user_id: userId, at: now });
+        return true;
+      } catch (e) {
+        console.warn(RT_DEBUG, 'typing whisper failed', e);
+        return false;
       }
     },
-    [backend, roomId],
+    [backend, roomId, typingThrottleMs, channelName],
   );
 
-  return {
-    status,
-    connectionLabel,
-    sendMessage,
-    sendTyping,
-  };
+  return { status, connectionLabel, sendMessage, sendTyping };
 }

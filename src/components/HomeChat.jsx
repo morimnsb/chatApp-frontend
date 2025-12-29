@@ -18,9 +18,7 @@ import { useBackendChoice, buildEndpoints } from '@/backend/choice';
 import useCurrentUser from '@/hooks/useCurrentUser';
 import useChatData from '@/hooks/useChatData';
 
-// ✅ فقط هوک سراسری WS (Reverb/Django)
 import useGlobalWebSocket from '@/hooks/useGlobalWebSocket';
-
 import {
   selectIndividualMessages,
   selectGroupMessages,
@@ -123,10 +121,18 @@ const HomeChat = () => {
   const error = useSelector(selectError);
   const typingIndicators = useSelector(selectTypingIndicators);
 
-  // Redux: auth + legacy ws slice (فعلاً برای دیباگ)
+  // Redux: auth + legacy ws slice (for debug)
   const accessToken = useSelector((s) => s.auth?.token) || '';
   const currentUser =
     useSelector((s) => s.auth?.user ?? s.message?.currentUser) ?? null;
+
+  const currentUserId =
+    currentUser?.id ??
+    currentUser?.user_id ??
+    currentUser?.userId ??
+    currentUser?.pk ??
+    null;
+
   const wsIsConnected = useSelector((s) => s.ws?.isConnected);
   const wsLastError = useSelector((s) => s.ws?.lastError);
 
@@ -135,38 +141,46 @@ const HomeChat = () => {
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [showUserDropdown, setShowUserDropdown] = useState(false);
 
+  // ✅ Online users state (Presence)
+  const [onlineUsers, setOnlineUsers] = useState([]);
+
   // Backend choice
   const { backendChoice, effectiveKind, handleChangeBackend } =
     useBackendChoice();
+
+  // ✅ token پاک (بدون Bearer)
   const rawToken = accessToken || '';
   const bareToken = rawToken.toString().replace(/^Bearer\s+/i, '');
+
   const backendKind = String(effectiveKind || '').toLowerCase();
 
-  // 🔌 WebSocket سراسری (Reverb / Django)
-  const globalWs = useGlobalWebSocket({
-    backendKind,
-    token: bareToken,
-    debugLabel: 'HomeChat',
-  });
-
-  const endpoints = useMemo(
-    () => buildEndpoints(effectiveKind),
-    [effectiveKind],
-  );
+  const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
 
   // فقط برای دیباگ Toast وقتی Reverb فعاله
-  const enableReverbEcho = backendKind === 'reverb' && Boolean(accessToken);
+  const enableReverbEcho = backendKind === 'reverb' && Boolean(bareToken);
 
   // Auth bootstrap (legacy / HTTP)
-  useCurrentUser({ accessToken, effectiveKind, endpoints });
+  useCurrentUser({ accessToken: bareToken, effectiveKind, endpoints });
+
+  // ✅ Global WS: فقط Presence (online users) — نوتیفیکیشن خاموش تا loop قطع شود
+  const globalWs = useGlobalWebSocket({
+  backendKind: effectiveKind,
+  token: bareToken, // ✅ نه accessToken
+  onOnlineUsersChange: (next) => {
+    setOnlineUsers((prev) => (typeof next === 'function' ? next(prev) : next));
+  },
+  enableGlobalNotifications: true,
+  handleGlobalNotification: (packet) => {
+    console.log('GLOBAL NOTIF', packet);
+  },
+});
+
 
   // RTK Query (me + users)
-  const meQ = useGetMeQuery(undefined, { skip: !accessToken });
-  const usersQ = useGetUsersQuery(undefined, { skip: !accessToken });
+  const meQ = useGetMeQuery(undefined, { skip: !bareToken });
+  const usersQ = useGetUsersQuery(undefined, { skip: !bareToken });
 
-  const [sendFriendRequest, sendFriendReqState] =
-    useSendFriendRequestMutation();
-
+  const [sendFriendRequest, sendFriendReqState] = useSendFriendRequestMutation();
   const [respondFriendRequest, respondFriendReqState] =
     useRespondFriendRequestMutation();
 
@@ -183,7 +197,7 @@ const HomeChat = () => {
   // Chat data bootstrap → conversations → Redux
   const { retryRooms, retryUsers: retryRoomsUsers } = useChatData({
     endpoints,
-    accessToken,
+    accessToken: bareToken,
   });
 
   // Derived lists from Redux (individual + groups)
@@ -197,10 +211,7 @@ const HomeChat = () => {
     [groupMessagesMap],
   );
 
-  const dmList = useMemo(
-    () => normalizeDmList(individualArray),
-    [individualArray],
-  );
+  const dmList = useMemo(() => normalizeDmList(individualArray), [individualArray]);
 
   const filteredIndividualMessages = useMemo(
     () => filterDmByQuery(dmList, searchQuery),
@@ -232,17 +243,15 @@ const HomeChat = () => {
         return;
       }
 
-      if (!accessToken) {
+      if (!bareToken) {
         toast.error('You must be logged in to add friends');
         return;
       }
 
       try {
         const res = await sendFriendRequest({ to_user_id: userId }).unwrap();
-        console.log('friendReq res', res);
         toast.success(res?.message || 'Friendship request sent!');
       } catch (err) {
-        console.log('friendReq err', err);
         const msg =
           err?.data?.message ||
           err?.data?.error ||
@@ -251,7 +260,7 @@ const HomeChat = () => {
         toast.error(msg);
       }
     },
-    [sendFriendRequest, accessToken, currentUser],
+    [sendFriendRequest, bareToken, currentUser],
   );
 
   // پاسخ به درخواست دوستی (قبول / رد)
@@ -259,7 +268,7 @@ const HomeChat = () => {
     async ({ friendshipId, action }) => {
       if (!friendshipId || !action) return;
 
-      if (!accessToken) {
+      if (!bareToken) {
         toast.error('You must be logged in');
         return;
       }
@@ -267,27 +276,23 @@ const HomeChat = () => {
       try {
         const res = await respondFriendRequest({
           friendship_id: friendshipId,
-          action, // 'accept' | 'reject'
+          action,
         }).unwrap();
 
         toast.success(res?.message || 'Friend request updated');
 
-        // بعد از accept/reject بهتره دیتا رو رفرش کنیم
-        retryRooms(); // کانورسیشن‌ها
-        usersQ.refetch?.(); // لیست یوزرها (اگه دوستی‌ها اونجا هم میاد)
-        console.log('respondFriendRequest res', res);
+        retryRooms();
+        usersQ.refetch?.();
       } catch (err) {
-        console.log('respondFriendRequest err', err);
         const msg =
           err?.data?.message ||
           err?.data?.error ||
           err?.error ||
           'Error updating friend request';
-
         toast.error(msg);
       }
     },
-    [respondFriendRequest, accessToken, retryRooms, usersQ],
+    [respondFriendRequest, bareToken, retryRooms, usersQ],
   );
 
   // Retry button (rooms + users)
@@ -299,98 +304,39 @@ const HomeChat = () => {
     meQ.refetch?.();
   }, [retryRooms, retryRoomsUsers, retryUsers, usersQ, meQ]);
 
-  // وضعیت لودینگ/خطا برای سایدبار چپ
   const loadingList = loading;
   const errorList = error;
 
-  /* ---------- 🧪 WebSocket / Global WS Debug Effects ---------- */
+  /* ---------- Minimal WS debug (کم لاگ) ---------- */
 
   useEffect(() => {
-    console.log('[WS DEBUG] backendChoice =', backendChoice);
-    console.log('[WS DEBUG] effectiveKind =', effectiveKind);
-    console.log('[WS DEBUG] backendKind =', backendKind);
-    console.log('[WS DEBUG] enableReverbEcho =', enableReverbEcho);
-    console.log('[WS DEBUG] hasAccessToken =', Boolean(accessToken));
-  }, [
-    backendChoice,
-    effectiveKind,
-    backendKind,
-    enableReverbEcho,
-    accessToken,
-  ]);
-
-  useEffect(() => {
-    console.log('[WS DEBUG] globalWs state =', {
-      backend: globalWs.backend,
-      status: globalWs.status,
-      lastEvent: globalWs.lastEvent,
-    });
-  }, [globalWs.backend, globalWs.status, globalWs.lastEvent]);
-
-  // وقتی وضعیت اتصال WS عوض می‌شود (legacy ws slice)
-  useEffect(() => {
-    console.log('[WS DEBUG] wsIsConnected changed =>', wsIsConnected);
-
-    if (wsIsConnected) {
-      toast.success('WebSocket connected (legacy ws slice)', {
-        toastId: 'ws-connected',
-      });
-    } else if (enableReverbEcho) {
-      toast.info('WebSocket disconnected (legacy slice)', {
-        toastId: 'ws-disconnected',
-      });
+    // فقط وقتی status یا error تغییر می‌کند
+    if (globalWs.status === 'connected') {
+      toast.success('GlobalWS connected', { toastId: 'gws-connected' });
     }
-  }, [wsIsConnected, enableReverbEcho]);
+    if (globalWs.status === 'error') {
+      toast.error('GlobalWS error', { toastId: 'gws-error' });
+    }
+  }, [globalWs.status]);
 
-  // وقتی خطای WS ثبت شود
   useEffect(() => {
     if (!wsLastError) return;
-    console.error('[WS DEBUG] wsLastError =', wsLastError);
-    toast.error(`WS error: ${String(wsLastError)}`, {
-      toastId: 'ws-error',
-    });
+    toast.error(`WS error: ${String(wsLastError)}`, { toastId: 'ws-error' });
   }, [wsLastError]);
-
-  /* ---------- Test helper for GlobalWS ---------- */
-
-  const handleTestSendRaw = useCallback(() => {
-    if (!globalWs || typeof globalWs.sendRaw !== 'function') {
-      console.warn('[WS DEBUG] globalWs.sendRaw not available');
-      return;
-    }
-
-    const roomId = selectedRoom || 2;
-    const userId = currentUser?.id || 1;
-
-    console.log('[WS DEBUG] Test sendRaw click', {
-      roomId,
-      userId,
-      wsBackend: globalWs.backend,
-      wsStatus: globalWs.status,
-    });
-
-    globalWs.sendRaw(
-      'ClientChatMessage', // event
-      `chat.${roomId}`, // channelName
-      {
-        content: 'hello from GlobalWS',
-        user_id: userId,
-        room_id: roomId,
-      },
-    );
-  }, [globalWs, selectedRoom, currentUser]);
 
   return (
     <Container fluid className="messages-container">
       <BackendPicker value={backendChoice} onChange={handleChangeBackend} />
+
       <div className="d-flex justify-content-between align-items-center mb-3">
         <h5 className="mb-0">Chat</h5>
         <LogoutButton />
       </div>
-      <div style={{ fontSize: 12, opacity: 0.8, padding: '4px 8px' }}>
-        Effective backend: <b>{endpoints.kind}</b> · WS backend:{' '}
-        <b>{globalWs.backend || 'off'}</b> · WS status:{' '}
-        <b>{globalWs.status || 'off'}</b> · Redux WS:{' '}
+
+      <div style={{ fontSize: 12, opacity: 0.85, padding: '4px 8px' }}>
+        Effective backend: <b>{endpoints.kind}</b> · GlobalWS:{' '}
+        <b>{globalWs.backend || 'off'}</b> · status: <b>{globalWs.status || 'off'}</b>{' '}
+        · Redux WS:{' '}
         {wsIsConnected ? (
           <Badge bg="success">Connected</Badge>
         ) : (
@@ -402,45 +348,33 @@ const HomeChat = () => {
           </span>
         )}
         <div style={{ marginTop: 4 }}>
-          RTK Query → me:{' '}
-          {meQ.isLoading ? 'loading' : meQ.error ? 'error' : 'ok'} · users:{' '}
-          {usersQ.isLoading ? 'loading' : usersQ.error ? 'error' : 'ok'}
+          RTK Query → me: {meQ.isLoading ? 'loading' : meQ.error ? 'error' : 'ok'} ·
+          users: {usersQ.isLoading ? 'loading' : usersQ.error ? 'error' : 'ok'}
         </div>
       </div>
+
       <Header
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
         setShowUserDropdown={setShowUserDropdown}
       />
 
-      {/* --- پنل آموزشی/دیباگ کوچک --- */}
-
-      {/* 🟢 حضور آنلاین‌ها - فعلاً خاموش / بعداً وصل می‌کنیم به Reverb presence */}
-     
-
-      {/* 🔬 دکمه تست ارسال مستقیم با GlobalWS */}
-      <div
-        style={{
-          fontSize: 12,
-          opacity: 0.8,
-          padding: '4px 8px',
-          display: 'flex',
-          gap: 8,
-          alignItems: 'center',
-        }}
-      >
-        <span>
-          GlobalWS backend: <b>{globalWs.backend || 'off'}</b> · status:{' '}
-          <b>{globalWs.status || 'off'}</b>
-        </span>
-        <button
-          type="button"
-          className="btn btn-sm btn-outline-secondary"
-          onClick={handleTestSendRaw}
-          disabled={globalWs.status !== 'connected'}
-        >
-          Test WS sendRaw
-        </button>
+      {/* ✅ Online Users UI */}
+      <div style={{ fontSize: 12, padding: 8 }}>
+        Online: <b>{onlineUsers.length}</b>
+        <div style={{ marginTop: 6 }}>
+          {onlineUsers.length === 0 ? (
+            <div style={{ opacity: 0.7 }}>
+              No one online (or Presence auth failed).
+            </div>
+          ) : (
+            onlineUsers.map((u) => (
+              <div key={u.id}>
+                {u.name || u.email || u.first_name || u.id}
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div
@@ -509,7 +443,7 @@ const HomeChat = () => {
         <Col md={4} className="messages-list">
           {loadingList ? (
             <Spinner animation="border" variant="primary" />
-          ) : !errorList ? ( // ✅ اگر خطا داریم → Alert
+          ) : !errorList ? (
             <Alert variant="danger">
               Error loading data. {String(errorList)}
               <button className="btn btn-link" onClick={retryFetch}>
@@ -536,7 +470,7 @@ const HomeChat = () => {
               individualMessages={filteredIndividualMessages}
               groupMessages={filteredGroupMessages}
               endpoints={endpoints}
-              accessToken={accessToken}
+              accessToken={bareToken}
               effectiveKind={effectiveKind}
             />
           )}
@@ -553,7 +487,7 @@ const HomeChat = () => {
         handleFriendshipRequest={handleFriendshipRequest}
         endpoints={endpoints}
         effectiveKind={effectiveKind}
-        accessToken={accessToken}
+        accessToken={bareToken}
       />
 
       <ToastContainer />

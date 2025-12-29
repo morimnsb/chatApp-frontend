@@ -1,285 +1,311 @@
 // src/hooks/useGlobalWebSocket.js
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useDispatch } from 'react-redux';
-
 import { wsConnected, wsDisconnected, wsError } from '@/store/wsActions';
 
-// ⚠️ حتما نصب شده باشن:
-// npm i laravel-echo pusher-js
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
-const DEBUG_PREFIX = '[GlobalWS]';
+const LOG = false;
+const PRESENCE_NAME = 'presence.global';
 
-// Pusher باید روی window ست بشه
-if (typeof window !== 'undefined') {
-  window.Pusher = Pusher;
-}
+if (typeof window !== 'undefined') window.Pusher = Pusher;
 
-// 👇 یک Echo سراسری برای کل اپ
+// Singleton (shared across app)
 let globalEcho = null;
+let echoTokenSig = null;
+
+const stripBearer = (t) => String(t || '').replace(/^Bearer\s+/i, '').trim();
+const toBearer = (t) => {
+  const bare = stripBearer(t);
+  return bare ? `Bearer ${bare}` : '';
+};
 
 export default function useGlobalWebSocket({
   backendKind,
   token,
   debugLabel = 'GlobalWS',
+
+  // Presence
+  onOnlineUsersChange,
+
+  // Notifications (optional)
+  enableGlobalNotifications = false,
+  handleGlobalNotification,
+  globalNotificationsChannel = 'notify.global',
 } = {}) {
   const dispatch = useDispatch();
 
   const [state, setState] = useState({
-    backend: null, // 'reverb' | 'django' | null
-    status: 'off', // 'off' | 'connecting' | 'connected' | 'error' | 'disconnected'
+    backend: null,
+    status: 'off', // off | connecting | connected | disconnected | error
     lastEvent: null,
   });
 
-  /* -------------------- اتصال/قطع Echo -------------------- */
-
+  // stable refs
+  const onOnlineRef = useRef(onOnlineUsersChange);
   useEffect(() => {
-    const isReverb = backendKind === 'reverb';
-    const hasToken = !!token;
+    onOnlineRef.current = onOnlineUsersChange;
+  }, [onOnlineUsersChange]);
 
-    console.log(DEBUG_PREFIX, 'effect start', {
-      backendKind,
-      hasToken,
-      debugLabel,
-    });
+  const onNotifRef = useRef(handleGlobalNotification);
+  useEffect(() => {
+    onNotifRef.current = handleGlobalNotification;
+  }, [handleGlobalNotification]);
 
-    // اگر بک‌اند Reverb نیست یا توکن نداریم → همه‌چیز رو خاموش کن
+  // guards
+  const presenceJoinedRef = useRef(false);
+  const notifSubscribedRef = useRef(false);
+  const notifChannelNameRef = useRef(null);
+
+  const shouldPresence = typeof onOnlineUsersChange === 'function';
+  const shouldNotifications =
+    enableGlobalNotifications && typeof handleGlobalNotification === 'function';
+
+  const disposeEcho = useCallback(() => {
+    if (!globalEcho) return;
+
+    try {
+      if (presenceJoinedRef.current) globalEcho.leave(PRESENCE_NAME);
+    } catch {}
+    presenceJoinedRef.current = false;
+
+    try {
+      const prev = notifChannelNameRef.current;
+      if (notifSubscribedRef.current && prev) globalEcho.leave(prev);
+    } catch {}
+    notifSubscribedRef.current = false;
+    notifChannelNameRef.current = null;
+
+    try {
+      globalEcho.disconnect();
+    } catch {}
+
+    globalEcho = null;
+    echoTokenSig = null;
+
+    if (LOG) console.log('[GlobalWS] disposed', debugLabel);
+  }, [debugLabel]);
+
+  // -------- connect / recreate echo (token change) ----------
+  useEffect(() => {
+    const isReverb = String(backendKind || '').toLowerCase() === 'reverb';
+    const bearer = toBearer(token);
+    const hasToken = !!bearer;
+
     if (!isReverb || !hasToken) {
-      console.log(DEBUG_PREFIX, 'closing (not reverb or no token)', {
-        backendKind,
-        hasToken,
-      });
-
-      if (globalEcho) {
-        try {
-          globalEcho.disconnect();
-        } catch (e) {
-          console.error(DEBUG_PREFIX, 'error disconnecting globalEcho', e);
-        }
-        globalEcho = null;
-      }
-
-      setState((s) => ({
-        ...s,
-        backend: null,
-        status: 'off',
-      }));
+      disposeEcho();
+      setState({ backend: null, status: 'off', lastEvent: null });
       dispatch(wsDisconnected());
       return;
     }
 
-    // ✅ اینجا باید Echo را بسازیم اگر هنوز ساخته نشده
-    if (!globalEcho) {
-      const appKey = import.meta.env.VITE_REVERB_APP_KEY;
-      const host = import.meta.env.VITE_REVERB_HOST || window.location.hostname;
-      const port = Number(import.meta.env.VITE_REVERB_PORT || 8080);
-      const apiBase =
-        import.meta.env.VITE_API_URL?.replace(/\/+$/, '') ||
-        'http://localhost:8000';
+    const appKey = import.meta.env.VITE_REVERB_APP_KEY;
+    const host = import.meta.env.VITE_REVERB_HOST || window.location.hostname;
+    const port = Number(import.meta.env.VITE_REVERB_PORT || 8080);
 
-      console.log(DEBUG_PREFIX, 'creating Echo instance', {
-        appKey,
-        host,
-        port,
-        apiBase,
-      });
+    // IMPORTANT: این URL باید همون جایی باشه که Laravel API سرو میشه
+    const apiBase =
+      import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
 
-      if (!appKey) {
-        const msg = 'Missing VITE_REVERB_APP_KEY';
-        console.error(DEBUG_PREFIX, msg);
-        dispatch(wsError(msg));
-        setState({
-          backend: 'reverb',
-          status: 'error',
-          lastEvent: { type: 'config_error', message: msg },
-        });
-        return;
-      }
+    // IMPORTANT: چون الان route توی /api/broadcasting/auth داریم
+    const authEndpoint = `${apiBase}/api/broadcasting/auth`;
+
+    if (!appKey) {
+      const msg = 'Missing VITE_REVERB_APP_KEY';
+      dispatch(wsError(msg));
+      setState({ backend: 'reverb', status: 'error', lastEvent: { message: msg } });
+      return;
+    }
+
+    const tokenSig = bearer;
+    const needRecreate = !globalEcho || echoTokenSig !== tokenSig;
+
+    if (needRecreate) {
+      disposeEcho();
 
       try {
         globalEcho = new Echo({
           broadcaster: 'pusher',
           key: appKey,
+
           wsHost: host,
           wsPort: port,
           wssPort: port,
-          forceTLS: false, // اگر wss/https راه انداختی اینو true کن
+
+          forceTLS: false,
           enabledTransports: ['ws'],
           disabledTransports: ['xhr_polling', 'xhr_streaming'],
           cluster: 'mt1',
-          authEndpoint: `${apiBase}/broadcasting/auth`,
+
+          authEndpoint,
           auth: {
             headers: {
-              Authorization: `Bearer ${token}`,
+              Authorization: tokenSig,
               Accept: 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
             },
           },
         });
 
-        // فقط اگر دوست داشتی، برای دیباگ
         window.__echo = globalEcho;
+        echoTokenSig = tokenSig;
+
+        if (LOG)
+          console.log('[GlobalWS] Echo created', {
+            debugLabel,
+            wsHost: host,
+            wsPort: port,
+            authEndpoint,
+          });
       } catch (e) {
-        console.error(DEBUG_PREFIX, 'error creating Echo', e);
-        const msg = e?.message || 'Error creating Echo instance';
+        const msg = e?.message || 'Error creating Echo';
         dispatch(wsError(msg));
-        setState({
-          backend: 'reverb',
-          status: 'error',
-          lastEvent: { type: 'create_error', error: msg },
-        });
+        setState({ backend: 'reverb', status: 'error', lastEvent: { message: msg } });
         return;
       }
 
-      console.log(DEBUG_PREFIX, 'Echo created, binding connection events');
-
-      const pusher = globalEcho.connector?.pusher;
-      if (!pusher || !pusher.connection) {
-        console.error(
-          DEBUG_PREFIX,
-          'pusher.connection is missing – check Echo config',
-        );
-      } else {
-        pusher.connection.bind('connected', () => {
-          console.log(DEBUG_PREFIX, '>> CONNECTION CONNECTED');
-          setState((s) => ({
-            ...s,
-            backend: 'reverb',
-            status: 'connected',
-          }));
+      const conn = globalEcho?.connector?.pusher?.connection;
+      if (conn) {
+        conn.bind('connected', () => {
+          if (LOG) console.log('[GlobalWS] connected', debugLabel);
+          setState((s) => ({ ...s, backend: 'reverb', status: 'connected' }));
           dispatch(wsConnected());
         });
 
-        pusher.connection.bind('disconnected', () => {
-          console.log(DEBUG_PREFIX, '>> CONNECTION DISCONNECTED');
-          setState((s) => ({
-            ...s,
-            backend: 'reverb',
-            status: 'disconnected',
-          }));
+        conn.bind('disconnected', () => {
+          if (LOG) console.log('[GlobalWS] disconnected', debugLabel);
+          setState((s) => ({ ...s, backend: 'reverb', status: 'disconnected' }));
           dispatch(wsDisconnected());
+
+          // اجازه بده دوباره join کنند
+          presenceJoinedRef.current = false;
+          notifSubscribedRef.current = false;
+          notifChannelNameRef.current = null;
         });
 
-        pusher.connection.bind('error', (err) => {
-          console.error(DEBUG_PREFIX, '>> CONNECTION ERROR', err);
-          setState((s) => ({
-            ...s,
-            backend: 'reverb',
-            status: 'error',
-            lastEvent: err,
-          }));
-          dispatch(wsError(err?.data || err?.message || 'WS connection error'));
+        conn.bind('error', (err) => {
+          if (LOG) console.log('[GlobalWS] error', err);
+          setState((s) => ({ ...s, backend: 'reverb', status: 'error', lastEvent: err }));
+          dispatch(wsError(err?.data || err?.message || 'WS error'));
         });
 
-        pusher.connection.bind('failed', (err) => {
-          console.error(DEBUG_PREFIX, '>> CONNECTION FAILED', err);
-          setState((s) => ({
-            ...s,
-            backend: 'reverb',
-            status: 'error',
-            lastEvent: err,
-          }));
-          dispatch(
-            wsError(err?.data || err?.message || 'WS connection failed'),
-          );
+        conn.bind('failed', (err) => {
+          if (LOG) console.log('[GlobalWS] failed', err);
+          setState((s) => ({ ...s, backend: 'reverb', status: 'error', lastEvent: err }));
+          dispatch(wsError(err?.data || err?.message || 'WS failed'));
         });
       }
     }
 
-    // وقتی تازه ساختیم هنوز ممکنه در حالت connecting باشه
     setState((s) => ({
       ...s,
       backend: 'reverb',
-      status: s.status === 'connected' ? s.status : 'connecting',
+      status: s.status === 'connected' ? 'connected' : 'connecting',
     }));
+  }, [backendKind, token, dispatch, debugLabel, disposeEcho]);
+
+  // -------- presence join ----------
+  useEffect(() => {
+    const isReverb = String(backendKind || '').toLowerCase() === 'reverb';
+    const bearer = toBearer(token);
+
+    if (!isReverb || !bearer) return;
+    if (!shouldPresence) return;
+    if (!globalEcho) return;
+    if (state.status !== 'connected') return;
+    if (presenceJoinedRef.current) return;
+
+    try {
+      const p = globalEcho.join(PRESENCE_NAME);
+
+      p.here((users) => onOnlineRef.current?.(Array.isArray(users) ? users : []));
+
+      p.joining((user) => {
+        onOnlineRef.current?.((prev) => {
+          const arr = Array.isArray(prev) ? prev : [];
+          if (!user?.id) return arr;
+          if (arr.some((u) => Number(u.id) === Number(user.id))) return arr;
+          return [...arr, user];
+        });
+      });
+
+      p.leaving((user) => {
+        onOnlineRef.current?.((prev) => {
+          const arr = Array.isArray(prev) ? prev : [];
+          if (!user?.id) return arr;
+          return arr.filter((u) => Number(u.id) !== Number(user.id));
+        });
+      });
+
+      presenceJoinedRef.current = true;
+      if (LOG) console.log('[GlobalWS] presence joined');
+    } catch (e) {
+      dispatch(wsError(e?.message || 'Presence join failed'));
+    }
 
     return () => {
-      console.log(DEBUG_PREFIX, 'cleanup effect (deps change)');
-      // 👈 اینجا عمداً disconnect نمی‌کنیم
-      // چون اگر backendKind هنوز 'reverb' و token داریم،
-      // بهتره connection زنده بمونه.
-      // قطع کامل فقط در if بالا (وقتی isReverb/hasToken false بشه) انجام میشه.
-    };
-  }, [backendKind, token, dispatch, debugLabel]);
-
-  /* -------------------- API برای بقیهٔ اپ -------------------- */
-
-  const sendRaw = useCallback(
-    (event, payload, channelName) => {
-      console.log(DEBUG_PREFIX, 'sendRaw called', {
-        event,
-        payload,
-        channelName,
-        status: state.status,
-      });
-
-      if (state.status !== 'connected') {
-        console.log(DEBUG_PREFIX, 'sendRaw blocked: status != connected', {
-          status: state.status,
-        });
-        return;
-      }
-
-      if (!globalEcho || !globalEcho.connector?.pusher) {
-        console.log(DEBUG_PREFIX, 'sendRaw: no echo/pusher instance yet', {
-          event,
-          channelName,
-          hasEcho: !!globalEcho,
-          hasPusher: !!globalEcho?.connector?.pusher,
-        });
-        return;
-      }
-
       try {
-        console.log(DEBUG_PREFIX, 'sendRaw → send_event', {
-          event,
-          channelName,
-          payload,
-        });
-        // 👈 این ترتیب درستش برای Reverb/Pusher
-        globalEcho.connector.pusher.send_event(event, payload, channelName);
-      } catch (e) {
-        console.error(DEBUG_PREFIX, 'sendRaw error', e);
-      }
-    },
-    [state.status],
-  );
+        globalEcho?.leave(PRESENCE_NAME);
+      } catch {}
+      presenceJoinedRef.current = false;
+    };
+  }, [backendKind, token, state.status, dispatch, shouldPresence]);
 
+  // -------- notifications (optional) ----------
+  useEffect(() => {
+    const isReverb = String(backendKind || '').toLowerCase() === 'reverb';
+    const bearer = toBearer(token);
 
-  const subscribe = useCallback((channelName) => {
-    if (!globalEcho) {
-      console.warn(DEBUG_PREFIX, 'subscribe called but no globalEcho yet', {
-        channelName,
-      });
-      return null;
-    }
-    try {
-      const ch = globalEcho.channel(channelName);
-      console.log(DEBUG_PREFIX, 'subscribed to', channelName, '→', ch);
-      return ch;
-    } catch (e) {
-      console.error(DEBUG_PREFIX, 'subscribe error', e);
-      return null;
-    }
-  }, []);
-
-  const leave = useCallback((channelName) => {
+    if (!isReverb || !bearer) return;
+    if (!shouldNotifications) return;
     if (!globalEcho) return;
-    try {
-      console.log(DEBUG_PREFIX, 'leave channel', channelName);
-      globalEcho.leave(channelName);
-    } catch (e) {
-      console.error(DEBUG_PREFIX, 'leave error', e);
+    if (state.status !== 'connected') return;
+
+    // اگر قبلاً روی همین کانال subscribe شده، هیچ کاری نکن
+    if (notifSubscribedRef.current && notifChannelNameRef.current === globalNotificationsChannel) {
+      return;
     }
-  }, []);
+
+    // اگر کانال عوض شد، قبلی رو leave کن
+    if (notifSubscribedRef.current && notifChannelNameRef.current) {
+      try {
+        globalEcho.leave(notifChannelNameRef.current);
+      } catch {}
+      notifSubscribedRef.current = false;
+      notifChannelNameRef.current = null;
+    }
+
+    try {
+      const ch = globalEcho.channel(globalNotificationsChannel);
+
+      ch.listen('.NotificationCreated', (packet) => {
+        try {
+          onNotifRef.current?.(packet);
+        } catch {}
+      });
+
+      notifSubscribedRef.current = true;
+      notifChannelNameRef.current = globalNotificationsChannel;
+
+      if (LOG) console.log('[GlobalWS] notifications subscribed', globalNotificationsChannel);
+    } catch (e) {
+      dispatch(wsError(e?.message || 'Notifications subscribe failed'));
+    }
+
+    return () => {
+      try {
+        globalEcho?.leave(globalNotificationsChannel);
+      } catch {}
+      notifSubscribedRef.current = false;
+      notifChannelNameRef.current = null;
+    };
+  }, [backendKind, token, state.status, dispatch, shouldNotifications, globalNotificationsChannel]);
 
   return {
     backend: state.backend,
     status: state.status,
     lastEvent: state.lastEvent,
-    sendRaw,
-    subscribe,
-    leave,
     echo: globalEcho,
   };
 }
