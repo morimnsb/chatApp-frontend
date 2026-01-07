@@ -2,7 +2,21 @@
 import React, { memo } from 'react';
 import { Modal, ListGroup, Spinner, Alert, Button } from 'react-bootstrap';
 
-const UserModal = ({
+const errText = (e) => {
+  if (!e) return null;
+  if (typeof e === 'string') return e;
+  if ('status' in e) return e.data?.message || e.error || `خطا در دریافت کاربران (status: ${e.status})`;
+  return 'خطا در دریافت کاربران';
+};
+
+const uiByStatus = {
+  accepted: { v: 'success', t: 'دوست هستید', dis: true },
+  pending_outgoing: { v: 'outline-warning', t: 'در انتظار تأیید', dis: true },
+  pending_incoming: { v: 'outline-warning', t: 'در انتظار پاسخ شما', dis: true },
+  none: { v: 'outline-secondary', t: 'افزودن دوست', dis: false },
+};
+
+function UserModal({
   showUserDropdown,
   setShowUserDropdown,
   loadingUsers,
@@ -10,141 +24,62 @@ const UserModal = ({
   filteredUsers = [],
   currentUser,
   handleFriendshipRequest,
-}) => {
-  const handleModalClose = () => setShowUserDropdown(false);
-
-  // تبدیل خطاهای RTK Query به متن قابل‌نمایش
-  const renderUsersError = () => {
-    if (!errorUsers) return null;
-
-    if (typeof errorUsers === 'string') return errorUsers;
-
-    if ('status' in errorUsers) {
-      if (errorUsers.data?.message) return errorUsers.data.message;
-      if (errorUsers.error) return String(errorUsers.error);
-      return `خطا در دریافت کاربران (status: ${errorUsers.status})`;
-    }
-
-    return 'خطا در دریافت کاربران';
-  };
+}) {
+  const close = () => setShowUserDropdown(false);
 
   return (
-    <Modal show={showUserDropdown} onHide={handleModalClose}>
-      <Modal.Header closeButton>
-        <Modal.Title>انتخاب کاربر</Modal.Title>
-      </Modal.Header>
+    <Modal show={showUserDropdown} onHide={close}>
+      <Modal.Header closeButton><Modal.Title>انتخاب کاربر</Modal.Title></Modal.Header>
       <Modal.Body>
         {loadingUsers ? (
           <Spinner animation="border" />
         ) : errorUsers ? (
-          <Alert variant="danger">{renderUsersError()}</Alert>
+          <Alert variant="danger">{errText(errorUsers)}</Alert>
         ) : (
           <ListGroup>
             {filteredUsers.length === 0 ? (
               <ListGroup.Item>کاربری موجود نیست</ListGroup.Item>
             ) : (
-              filteredUsers.map((user) => {
-                const userId = user.id ?? user.pk;
-                const numericUserId =
-                  userId != null ? Number(userId) : undefined;
+              filteredUsers.map((u) => {
+                const id = u.id ?? u.pk;
+                const name = u.first_name || u.firstName || u.name || u.email || `User #${id}`;
+                const avatar = u.photo || u.profile_picture || u.avatar || '/images/default-avatar.png';
 
-                const displayName =
-                  user.first_name ||
-                  user.firstName ||
-                  user.name ||
-                  user.email ||
-                  `User #${userId}`;
-
-                const avatar =
-                  user.photo ||
-                  user.profile_picture ||
-                  user.avatar ||
-                  '/images/default-avatar.png';
-
-                const isSelf =
-                  currentUser?.id &&
-                  numericUserId != null &&
-                  numericUserId === Number(currentUser.id);
-
-                // 👇 وضعیت دوستی که از بک‌اند همراه یوزر می‌آید
-                const friendshipStatus = user.friendship_status || 'none';
-                const isFriend = friendshipStatus === 'accepted';
-                const isPendingOutgoing =
-                  friendshipStatus === 'pending_outgoing';
-                const isPendingIncoming =
-                  friendshipStatus === 'pending_incoming';
-                const isNone = friendshipStatus === 'none';
-
-                // تنظیم ظاهر دکمه
-                let buttonVariant = 'outline-secondary';
-                let buttonLabel = 'افزودن دوست';
-                let buttonDisabled = false;
-
-                if (isFriend) {
-                  buttonVariant = 'success';
-                  buttonLabel = 'دوست هستید';
-                  buttonDisabled = true;
-                } else if (isPendingOutgoing) {
-                  buttonVariant = 'outline-warning';
-                  buttonLabel = 'در انتظار تأیید';
-                  buttonDisabled = true;
-                } else if (isPendingIncoming) {
-                  buttonVariant = 'outline-warning';
-                  buttonLabel = 'در انتظار پاسخ شما';
-                  // بعداً می‌تونی این حالت رو فعال کنی برای «تأیید دوستی»
-                  buttonDisabled = true;
-                } else if (isNone) {
-                  buttonVariant = 'outline-secondary';
-                  buttonLabel = 'افزودن دوست';
-                  buttonDisabled = false;
-                }
+                const isSelf = id != null && currentUser?.id != null && Number(id) === Number(currentUser.id);
+                const st = u.friendship_status || 'none';
+                const { v, t, dis } = uiByStatus[st] || uiByStatus.none;
 
                 return (
                   <ListGroup.Item
-                    key={userId}
+                    key={id}
                     as="div"
                     className="d-flex justify-content-between align-items-center"
-                    style={{
-                      cursor: isSelf ? 'not-allowed' : 'default',
-                      opacity: isSelf ? 0.6 : 1,
-                    }}
+                    style={{ cursor: isSelf ? 'not-allowed' : 'default', opacity: isSelf ? 0.6 : 1 }}
                   >
                     <div className="d-flex align-items-center">
-                      <img
-                        src={avatar}
-                        alt={displayName}
-                        className="profile-img me-2"
-                      />
-                      {displayName}
+                      <img src={avatar} alt={name} className="profile-img me-2" />
+                      {name}
                       {isSelf && <span className="ms-2 text-muted">(شما)</span>}
-                      {isFriend && !isSelf && (
-                        <span className="ms-2 badge bg-success">دوست</span>
+                      {st === 'accepted' && !isSelf && <span className="ms-2 badge bg-success">دوست</span>}
+                      {st === 'pending_outgoing' && !isSelf && (
+                        <span className="ms-2 badge bg-warning text-dark">در انتظار تأیید</span>
                       )}
-                      {isPendingOutgoing && !isSelf && (
-                        <span className="ms-2 badge bg-warning text-dark">
-                          در انتظار تأیید
-                        </span>
-                      )}
-                      {isPendingIncoming && !isSelf && (
-                        <span className="ms-2 badge bg-warning text-dark">
-                          درخواست دوستی دریافت شده
-                        </span>
+                      {st === 'pending_incoming' && !isSelf && (
+                        <span className="ms-2 badge bg-warning text-dark">درخواست دوستی دریافت شده</span>
                       )}
                     </div>
 
-                    {/* فقط یک دکمه – همان برای افزودن / انتظار / دوست هستید */}
                     {!isSelf && (
                       <Button
-                        variant={buttonVariant}
-                        disabled={buttonDisabled}
+                        variant={v}
+                        disabled={dis}
                         onClick={() => {
-                          if (!isNone) return; // فقط وقتی هنوز دوستی نداریم
-                          handleFriendshipRequest(userId);
-                          // می‌تونی بخوای مودال بسته بشه یا باز بمونه، سلیقه‌ای:
-                          handleModalClose();
+                          if (st !== 'none') return;
+                          handleFriendshipRequest(id);
+                          close();
                         }}
                       >
-                        {buttonLabel}
+                        {t}
                       </Button>
                     )}
                   </ListGroup.Item>
@@ -156,6 +91,6 @@ const UserModal = ({
       </Modal.Body>
     </Modal>
   );
-};
+}
 
 export default memo(UserModal);
