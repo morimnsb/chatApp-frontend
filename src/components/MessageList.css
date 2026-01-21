@@ -130,3 +130,48 @@
     font-size: 0.75rem;
   }
 }
+/* online/offline ring on avatars */
+.profile-img.is-online {
+  border: 2px solid rgba(34, 197, 94, 0.95); /* green */
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.18);
+}
+
+.profile-img.is-offline {
+  border: 2px solid rgba(239, 68, 68, 0.95); /* red */
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.16);
+}
+/* Avatar border status */
+.avatar-wrap {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.avatar-wrap .profile-img {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  object-fit: cover;
+  display: block;
+}
+
+/* green ring */
+.avatar-wrap.online {
+  border: 2px solid rgba(34, 197, 94, 0.95);
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
+}
+
+/* red ring */
+.avatar-wrap.offline {
+  border: 2px solid rgba(239, 68, 68, 0.95);
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.10);
+}
+
+/* optional for group / unknown */
+.avatar-wrap.neutral {
+  border: 2px solid rgba(255,255,255,0.18);
+  box-shadow: none;
+}

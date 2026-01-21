@@ -1,126 +1,752 @@
+/* =========================================================
+   CHAT UI — Full Theme (Header + Modal + ChatWindow + Bubbles)
+   Matches your exact classNames:
+   - header-container, search-input-group, add-button, ...
+   - typing-indicator
+   - profile-img (UserModal)
+   ========================================================= */
+
+:root {
+  --bg0: #070b14;
+  --bg1: #0b1220;
+
+  --panel: rgba(255, 255, 255, 0.06);
+  --panel2: rgba(255, 255, 255, 0.08);
+  --panel3: rgba(255, 255, 255, 0.04);
+
+  --border: rgba(255, 255, 255, 0.12);
+  --border2: rgba(255, 255, 255, 0.18);
+
+  --text: rgba(255, 255, 255, 0.92);
+  --muted: rgba(255, 255, 255, 0.65);
+  --muted2: rgba(255, 255, 255, 0.45);
+
+  --accent: #5eead4;
+  --accent2: #60a5fa;
+  --danger: #fb7185;
+  --warn: #fbbf24;
+  --ok: #34d399;
+
+  --shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+  --shadowSoft: 0 12px 34px rgba(0, 0, 0, 0.25);
+
+  --radius: 18px;
+  --radiusSm: 12px;
+  --radiusXs: 10px;
+
+  --pad: 14px;
+  --gap: 12px;
+
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Noto Sans";
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background:
+    radial-gradient(1200px 480px at 20% 0%, rgba(96, 165, 250, 0.18), transparent 60%),
+    radial-gradient(900px 520px at 90% 20%, rgba(94, 234, 212, 0.14), transparent 55%),
+    linear-gradient(180deg, var(--bg0), var(--bg1));
+  color: var(--text);
+  font-family: var(--font);
+}
+html, body, #root { height: 100%; }
+
+/* ---------------------------------------------------------
+   HomeChat container
+--------------------------------------------------------- */
 .messages-container {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background-color: #f5f5f5;
+  min-height: 100dvh;
+  padding: 18px 16px;
+  overflow: hidden;
 }
 
+.messages-list {
+  padding-right: 10px;
+}
+
+@media (max-width: 991px) {
+  .messages-list {
+    padding-right: 0;
+    margin-bottom: 12px;
+  }
+}
+
+/* ---------------------------------------------------------
+   Header (your exact classnames)
+--------------------------------------------------------- */
 .header-container {
-  padding: 20px;
-  background-color: #f5f5f5;
-  border-bottom: 1px solid #ddd;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--panel), rgba(255,255,255,0.03));
+  border-radius: var(--radius);
+  box-shadow: var(--shadowSoft);
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
-.messages-header {
-  display: flex;
-  align-items: center;
-  margin-bottom: 10px;
-}
-
+/* "Messages" label row */
 .messages-header p {
-  font-size: 24px;
-  font-weight: bold;
+  margin: 0;
+  font-weight: 900;
+  letter-spacing: 0.25px;
 }
 
-.message-count {
-  font-size: 18px;
-  color: #888;
-  margin-left: 5px;
-}
-
+/* Search row */
 .search-input-group {
   display: flex;
-  margin-bottom: 10px;
+  gap: 10px;
+  align-items: center;
 }
 
-.add-button {
-  background-color: #007bff;
-  color: #fff;
+.search-input-group .form-control {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 11px 14px;
+  outline: none;
+  box-shadow: none;
 }
 
+.search-input-group .form-control::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.search-input-group .form-control:focus {
+  border-color: rgba(96, 165, 250, 0.35);
+  box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.10);
+}
+
+/* Plus button */
+.add-button.btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(94, 234, 212, 0.25);
+  background: rgba(94, 234, 212, 0.10);
+  color: var(--text);
+  font-weight: 900;
+  line-height: 1;
+}
+
+.add-button.btn:hover {
+  background: rgba(94, 234, 212, 0.16);
+  border-color: rgba(94, 234, 212, 0.35);
+}
+
+/* Sort row */
 .message-sort-dropdown {
   display: flex;
   align-items: center;
-  margin-bottom: 10px;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
-.message-sort-dropdown span {
-  margin-right: 5px;
-}
-
+/* dropdown toggle */
+.message-dropdown-toggle.btn,
 .message-dropdown-toggle {
-  color: #007bff;
-  text-decoration: none;
   padding: 0;
+  color: var(--text) !important;
+  font-weight: 800;
+  text-decoration: none !important;
+  border: 0 !important;
 }
 
+.dropdown-menu {
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(18, 24, 38, 0.98);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.dropdown-item {
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+/* ALL MESSAGES row */
 .all-messages {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 999px;
+  padding: 10px 12px;
+  width: fit-content;
+}
+
+.all-messages p {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.35px;
+  color: var(--muted);
 }
 
 .message-img {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
+  opacity: 0.9;
 }
 
-.message-list {
-  height: calc(100vh - 150px);
-  overflow-y: auto;
-}
-
-.message-list .list-group-item {
+/* ---------------------------------------------------------
+   ChatWindow + Messages + Input
+--------------------------------------------------------- */
+.chat-window {
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--panel), rgba(255, 255, 255, 0.04));
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 15px;
-  border: none;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  height: calc(100dvh - 180px); /* اگر Header/بالا داری، عدد رو کمی تنظیم کن */
+  min-height: 0; /* خیلی مهم برای flex scroll */
 }
 
-.message-list .list-group-item .subtext {
-  color: #888;
-  font-size: 14px;
-  flex-grow: 1;
-  margin-left: 10px;
-}
-
-.message-list .list-group-item .time-text {
-  color: #888;
+.connection-status {
+  padding: 10px 14px;
   font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-.message-list .list-group-item img.profile-img {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+.connection-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ok);
+  display: inline-block;
   margin-right: 10px;
-}
-
-.list-group-header {
-  background-color: #f0f0f0;
-  font-weight: bold;
-  font-size: 16px;
+  box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.12);
 }
 
 .loading-spinner {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100%;
-}
-
-.chat-window {
-  background-color: #fff;
-  border-left: 1px solid #ddd;
-  height: 100vh;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(6px);
+  z-index: 10;
 }
 
 .no-chat-selected {
-  font-size: 24px;
-  color: #888;
+  border: 1px dashed var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius);
+  padding: 24px;
+  min-height: 280px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+/* Scroll area */
+.messages{
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px;
+  scroll-behavior: smooth;
+}
+
+/* scrollbars */
+.messages::-webkit-scrollbar { width: 10px; }
+.messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-radius: 999px;
+}
+.messages::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+.messages::-webkit-scrollbar-track { background: transparent; }
+
+.no-messages {
+  color: var(--muted);
+  padding: 18px 12px;
+  text-align: center;
+}
+
+/* Input */
+.chat-input-form{
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.18);
+  backdrop-filter: blur(10px);
+}
+
+
+
+.chat-input-form .form-control {
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 11px 14px;
+  outline: none;
+  box-shadow: none;
+}
+
+.chat-input-form .form-control::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.chat-input-form .form-control:focus {
+  border-color: rgba(94, 234, 212, 0.35);
+  box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.10);
+}
+
+.chat-input-form .btn {
+  border-radius: 999px;
+  padding: 10px 16px;
+  border: 1px solid rgba(94, 234, 212, 0.22);
+  background: rgba(94, 234, 212, 0.12);
+  color: var(--text);
+  font-weight: 900;
+}
+
+.chat-input-form .btn:hover {
+  background: rgba(94, 234, 212, 0.18);
+  border-color: rgba(94, 234, 212, 0.35);
+}
+
+.chat-input-form .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------
+   MessageBubble (your exact classnames)
+--------------------------------------------------------- */
+.message-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+/* optional: add mine/theirs in JSX for best alignment */
+.message-bubble.mine { align-items: flex-end; }
+.message-bubble.theirs { align-items: flex-start; }
+
+.chat-header-details {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 6px;
+  opacity: 0.95;
+}
+
+.chat-header-img {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.chat-header-info h4 {
+  font-size: 13px;
+  margin: 0;
+  font-weight: 900;
+  color: var(--text);
+  letter-spacing: 0.15px;
+}
+
+/* message content box */
+.message-text {
+  position: relative;
+  max-width: 78%;
+  padding: 12px 12px 18px;
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.22);
+  color: var(--text);
+  line-height: 1.55;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+/* tail */
+.message-text::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  background: inherit;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  transform: rotate(45deg);
+  border-bottom-left-radius: 4px;
+  opacity: 0.9;
+}
+
+/* my messages */
+.message-bubble.mine .message-text {
+  background: linear-gradient(180deg, rgba(96, 165, 250, 0.16), rgba(96, 165, 250, 0.08));
+  border-color: rgba(96, 165, 250, 0.24);
+}
+.message-bubble.mine .message-text::after {
+  left: auto;
+  right: 14px;
+  transform: rotate(225deg);
+}
+
+.message-time {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  font-size: 11px;
+  color: var(--muted2);
+}
+
+.read_receipt {
+  position: absolute;
+  left: 10px;
+  bottom: 6px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: -1px;
+  user-select: none;
+}
+.read_receipt.read {
+  color: var(--accent);
+  text-shadow: 0 0 12px rgba(94, 234, 212, 0.25);
+}
+
+/* ---------------------------------------------------------
+   TypingIndicator (your exact component)
+--------------------------------------------------------- */
+.typing-indicator {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+/* optional: if you later add dots span */
+.typing-indicator .dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.typing-indicator .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.45);
+  animation: chatDot 1.1s infinite ease-in-out;
+}
+.typing-indicator .dot:nth-child(2) { animation-delay: 0.12s; }
+.typing-indicator .dot:nth-child(3) { animation-delay: 0.24s; }
+
+@keyframes chatDot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40% { transform: translateY(-4px); opacity: 0.95; }
+}
+
+/* ---------------------------------------------------------
+   UserModal (bootstrap modal + your profile-img)
+--------------------------------------------------------- */
+.modal-content {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(20, 26, 40, 0.98), rgba(14, 18, 30, 0.98));
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.modal-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.modal-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.modal-title {
+  font-weight: 900;
+}
+
+.modal-body .alert {
+  border-radius: var(--radiusSm);
+  border: 1px solid rgba(251, 113, 133, 0.20);
+  background: rgba(251, 113, 133, 0.08);
+  color: var(--text);
+}
+
+/* list group items */
+.list-group {
+  border-radius: var(--radiusSm);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.list-group-item {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.list-group-item:last-child {
+  border-bottom: 0;
+}
+
+.list-group-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* avatar inside modal */
+.profile-img {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* badges tweaks */
+.badge.bg-success {
+  background: rgba(52, 211, 153, 0.18) !important;
+  border: 1px solid rgba(52, 211, 153, 0.24);
+  color: var(--text);
+}
+.badge.bg-warning {
+  background: rgba(251, 191, 36, 0.18) !important;
+  border: 1px solid rgba(251, 191, 36, 0.26);
+}
+.badge.bg-warning.text-dark {
+  color: rgba(255, 255, 255, 0.92) !important;
+}
+
+/* buttons inside modal */
+.modal-body .btn {
+  border-radius: 999px;
+  font-weight: 900;
+}
+.btn-outline-secondary {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+.btn-outline-secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.btn-outline-warning {
+  border-color: rgba(251, 191, 36, 0.30);
+  color: var(--text);
+  background: rgba(251, 191, 36, 0.10);
+}
+.btn-outline-warning:hover {
+  background: rgba(251, 191, 36, 0.16);
+}
+
+/* ---------------------------------------------------------
+   RTL helpers (optional)
+--------------------------------------------------------- */
+[dir="rtl"] .message-time { right: auto; left: 10px; }
+[dir="rtl"] .read_receipt { left: auto; right: 10px; }
+[dir="rtl"] .connection-status::before { margin-right: 0; margin-left: 10px; }
+[dir="rtl"] .message-text::after { left: auto; right: 14px; }
+
+/* Reduce motion */
+@media (prefers-reduced-motion: reduce) {
+  .messages { scroll-behavior: auto; }
+  .typing-indicator .dot { animation: none; }
+}
+/* =========================================================
+   Extra: BackendPicker (current markup) + MessageList polish
+   ========================================================= */
+
+/* -------- BackendPicker (your current markup) -------- */
+/* چون BackendPicker کلاس ندارد و inline-style دارد، با selector عمومی کار می‌کنیم.
+   اگر دوست داشتی، یک className="backend-picker" به div اضافه کن تا دقیق‌تر شود. */
+
+.messages-container > div[style*="font-size: 12"] {
+  /* wrapper of BackendPicker */
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(10px);
+  border-radius: var(--radius);
+  box-shadow: var(--shadowSoft);
+  padding: 10px 12px !important;
+  margin-bottom: 10px;
+}
+
+/* label */
+.messages-container > div[style*="font-size: 12"] label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* select */
+.messages-container > div[style*="font-size: 12"] select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 10px 38px 10px 12px;
+  min-width: 220px;
+  outline: none;
+  box-shadow: none;
+  cursor: pointer;
+
+  /* dropdown arrow */
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(255,255,255,0.55) 50%),
+    linear-gradient(135deg, rgba(255,255,255,0.55) 50%, transparent 50%),
+    linear-gradient(to right, transparent, transparent);
+  background-position:
+    calc(100% - 18px) calc(50% - 3px),
+    calc(100% - 12px) calc(50% - 3px),
+    0 0;
+  background-size:
+    6px 6px,
+    6px 6px,
+    100% 100%;
+  background-repeat: no-repeat;
+}
+
+.messages-container > div[style*="font-size: 12"] select:focus {
+  border-color: rgba(94, 234, 212, 0.35);
+  box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.10);
+}
+
+/* options (limited styling) */
+.messages-container > div[style*="font-size: 12"] option {
+  background: #111827;
+  color: #fff;
+}
+
+/* -------- MessageList (messages area) polish -------- */
+.messages[role="list"] {
+  /* already styled earlier; this just strengthens spacing */
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* better empty state */
+.no-messages {
+  border: 1px dashed var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--radiusSm);
+  padding: 18px 14px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* on very small screens */
+@media (max-width: 420px) {
+  .messages-container > div[style*="font-size: 12"] select {
+    min-width: 160px;
+  }
+}
+/* BackendPicker (clean class-based) */
+.backend-picker {
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(10px);
+  border-radius: var(--radius);
+  box-shadow: var(--shadowSoft);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.backend-picker__label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--muted);
+  font-weight: 800;
+  font-size: 12px;
+}
+
+.backend-picker__select {
+  appearance: none;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 10px 38px 10px 12px;
+  min-width: 220px;
+  outline: none;
+  cursor: pointer;
+
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(255,255,255,0.55) 50%),
+    linear-gradient(135deg, rgba(255,255,255,0.55) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 3px),
+    calc(100% - 12px) calc(50% - 3px);
+  background-size: 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.backend-picker__select:focus {
+  border-color: rgba(94, 234, 212, 0.35);
+  box-shadow: 0 0 0 4px rgba(94, 234, 212, 0.10);
+}
+
+
+
+/* wrapper for avatar (recommended) */
+/* Add to src/components/MessageList.css (or your global chat css) */
+.avatar-wrap {
+  position: relative;
+  display: inline-flex;
+  border-radius: 999px;
+}
+
+.avatar-wrap.is-online::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  border: 2px solid var(--ok, #34d399);
+  box-shadow:
+    0 0 0 3px rgba(52, 211, 153, 0.18),
+    0 0 14px rgba(52, 211, 153, 0.45);
+  pointer-events: none;
 }

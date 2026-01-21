@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
@@ -10,10 +10,9 @@ import LoginPage from '@/components/auth/LoginForm';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { meThunk, selectBootstrapped } from '@/store/authSlice';
 
-// 👇 هوک رویدادهای کاربر (کانال user.{id})
 import useUserEvents from '@/hooks/useUserEvents';
 
-// صفحات lazy
+// lazy pages
 const Register = React.lazy(() => import('@/components/RegisterForm/RegisterForm'));
 const VerifyEmail = React.lazy(() => import('@/components/VerifyEmail/VerifyEmail'));
 const ForgotPasswordForm = React.lazy(() => import('@/components/auth/ForgotPasswordForm'));
@@ -23,17 +22,41 @@ const ChangePasswordForm = React.lazy(() => import('@/components/auth/ChangePass
 
 function Splash() {
   return (
-    <div style={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', fontFamily: 'system-ui' }}>
+    <div
+      style={{
+        minHeight: '100dvh',
+        display: 'grid',
+        placeItems: 'center',
+        fontFamily: 'system-ui',
+      }}
+    >
       Loading might takes a few times
     </div>
   );
 }
 
+// selectors (بهتره بعداً ببری تو authSlice/selectors.js)
+const selectToken = (s) => s.auth?.token || s.auth?.access_token || null;
+const selectCurrentUserId = (s) =>
+  s.auth?.user?.id ??
+  s.auth?.user?.user_id ??
+  s.auth?.currentUser?.id ??
+  s.auth?.currentUser?.user_id ??
+  null;
+
+const selectIsAuthed = (s) => Boolean(selectToken(s) && selectCurrentUserId(s));
+
 function RootRouter() {
   const dispatch = useDispatch();
   const bootstrapped = useSelector(selectBootstrapped);
 
+  // جلوگیری از دوبار dispatch در React 18 StrictMode (DEV)
+  const didInitRef = useRef(false);
+
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+
     dispatch(meThunk());
   }, [dispatch]);
 
@@ -56,29 +79,42 @@ function RootRouter() {
             <Route path="/change-password" element={<ChangePasswordForm />} />
           </Route>
 
-          <Route path="*" element={<Navigate to="/login" replace />} />
+          {/* fallback (هوشمند) */}
+          <Route path="*" element={<SmartFallback />} />
         </Routes>
       </React.Suspense>
     </BrowserRouter>
   );
 }
 
+function SmartFallback() {
+  const isAuthed = useSelector(selectIsAuthed);
+  return <Navigate to={isAuthed ? '/' : '/login'} replace />;
+}
+
 function AppShell({ children }) {
-  // ✅ سازگار با authSlice فعلی تو (token + user)
-  const token = useSelector((s) => s.auth?.token) || null;
-  const currentUserId =
-    useSelector((s) => s.auth?.user?.id ?? s.auth?.user?.user_id ?? s.auth?.currentUser?.id) || null;
+  const bootstrapped = useSelector(selectBootstrapped);
 
-  const effectiveKind = 'reverb';
+  const token = useSelector(selectToken);
+  const currentUserId = useSelector(selectCurrentUserId);
 
-  useUserEvents({ effectiveKind, accessToken: token, currentUserId });
+  // اگر BackendPicker داری، این رو از store بگیر:
+  // const effectiveKind = useSelector((s) => s.api?.backendKind ?? 'reverb');
+  const effectiveKind = useMemo(() => 'reverb', []);
+
+  // فقط وقتی آماده‌ایم هوک رو فعال کن
+  const shouldEnableUserEvents = bootstrapped && token && currentUserId;
+
+  useUserEvents(
+    shouldEnableUserEvents
+      ? { effectiveKind, accessToken: token, currentUserId }
+      : { effectiveKind, accessToken: null, currentUserId: null }
+  );
 
   return (
     <>
       {children}
-
-      {/* ✅ فقط یکبار در کل اپ */}
-      <ToastContainer position="bottom-right" newestOnTop limit={3} />
+      <ToastContainer position="top-right" newestOnTop limit={3} />
     </>
   );
 }

@@ -1,7 +1,7 @@
 // src/components/ProtectedRoute.jsx
 import React from 'react';
-import { useSelector, shallowEqual } from 'react-redux';
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useSelector } from 'react-redux';
+import { Navigate, Outlet } from 'react-router-dom';
 import { selectIsLoggedIn, selectBootstrapped } from '@/store/authSlice';
 
 function FullscreenSplash() {
@@ -20,7 +20,12 @@ function FullscreenSplash() {
 }
 
 export default function ProtectedRoute() {
+  const bootstrapped = useSelector(selectBootstrapped);
   const isLoggedIn = useSelector(selectIsLoggedIn);
+
+  // ✅ تا وقتی meThunk نتیجه نداده، redirect نکن
+  if (!bootstrapped) return <FullscreenSplash />;
+
   if (!isLoggedIn) return <Navigate to="/login" replace />;
   return <Outlet />;
 }

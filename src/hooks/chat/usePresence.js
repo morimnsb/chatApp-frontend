@@ -1,5 +1,5 @@
 // src/hooks/chat/usePresence.js
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import useGlobalWebSocket from '@/hooks/useGlobalWebSocket';
 
 export function usePresence({ backendKind, token, currentUserId, onGlobalNotification }) {
@@ -15,6 +15,12 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
     enableGlobalNotifications: true,
     handleGlobalNotification: onGlobalNotification,
   });
+
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      console.log('[usePresence] onlineUsers sample=', onlineUsers?.[0], 'count=', onlineUsers?.length);
+    }
+  }, [onlineUsers]);
 
   return { onlineUsers };
 }

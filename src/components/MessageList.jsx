@@ -13,18 +13,18 @@ const MessageList = ({
   handleSelectChat,
   selectedRoom,
   typingIndicators = {},
-  onRespondFriendRequest, // accept/reject
+  onRespondFriendRequest,
 }) => {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
 
   const individualMessages = useMemo(
-    () => filteredIndividualMessages || [],
+    () => (Array.isArray(filteredIndividualMessages) ? filteredIndividualMessages : []),
     [filteredIndividualMessages],
   );
 
   const groupMessages = useMemo(
-    () => filteredGroupMessages || [],
+    () => (Array.isArray(filteredGroupMessages) ? filteredGroupMessages : []),
     [filteredGroupMessages],
   );
 
@@ -43,10 +43,10 @@ const MessageList = ({
     try {
       const token = localStorage.getItem('access_token');
 
-const body = {
-  name: 'ias: New Group Chat',
-  is_group: true,
-};
+      const body = {
+        name: 'ias: New Group Chat',
+        is_group: true,
+      };
 
       const res = await axios.post('http://localhost:8000/api/rooms', body, {
         headers: {
@@ -122,8 +122,6 @@ const body = {
           else if (lastMsg) subtitle = lastMsg.content || '';
           else subtitle = '';
 
-          // ✅ مهم: ListGroup.Item دیگه action نیست (button نشه)
-          // ✅ کلیک‌پذیری روی div داخلی
           return (
             <ListGroup.Item
               key={`dm-${roomId || userId}`}
@@ -140,9 +138,13 @@ const body = {
                 }}
               >
                 <div className="message-content">
-                  <img src={avatar} alt={displayName} className="profile-img" />
-                  {convo.is_online && <span className="online-status"></span>}
-                </div>
+  <img
+    src={avatar}
+    alt={displayName}
+    className={`profile-img ${convo.is_online ? 'is-online' : 'is-offline'}`}
+  />
+</div>
+
 
                 <div className="message-body">
                   <div className="message-header">
@@ -154,9 +156,7 @@ const body = {
                         </span>
                       )}
                     </span>
-                    <span className="time-text">
-                      {lastTime ? formatTime(lastTime) : ''}
-                    </span>
+                    <span className="time-text">{lastTime ? formatTime(lastTime) : ''}</span>
                   </div>
 
                   <div className="message-details">
@@ -171,10 +171,7 @@ const body = {
                               size="sm"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                onRespondFriendRequest({
-                                  friendshipId,
-                                  action: 'accept',
-                                });
+                                onRespondFriendRequest({ friendshipId, action: 'accept' });
                               }}
                             >
                               Accept
@@ -185,10 +182,7 @@ const body = {
                               size="sm"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                onRespondFriendRequest({
-                                  friendshipId,
-                                  action: 'reject',
-                                });
+                                onRespondFriendRequest({ friendshipId, action: 'reject' });
                               }}
                             >
                               Decline
@@ -198,14 +192,10 @@ const body = {
                       </div>
                     ) : (
                       <>
-                        {renderTypingIndicator(userId) || (
-                          <span className="subtext">{subtitle}</span>
-                        )}
+                        {renderTypingIndicator(userId) || <span className="subtext">{subtitle}</span>}
 
                         {convo.unread_count > 0 && (
-                          <span className="unread_count">
-                            {convo.unread_count}
-                          </span>
+                          <span className="unread_count">{convo.unread_count}</span>
                         )}
                       </>
                     )}
@@ -216,9 +206,7 @@ const body = {
           );
         })
       ) : (
-        <ListGroup.Item className="no-messages">
-          No individual messages available
-        </ListGroup.Item>
+        <ListGroup.Item className="no-messages">No individual messages available</ListGroup.Item>
       )}
 
       {/* ----------------- GROUP HEADER + BUTTON ----------------- */}
@@ -234,13 +222,7 @@ const body = {
         >
           {creating ? (
             <>
-              <Spinner
-                as="span"
-                animation="border"
-                size="sm"
-                role="status"
-                aria-hidden="true"
-              />{' '}
+              <Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" />{' '}
               Creating...
             </>
           ) : (
@@ -260,9 +242,7 @@ const body = {
         groupMessages.map((room) => (
           <ListGroup.Item
             key={`group-${room.id}`}
-            className={`message-list-item p-0 ${
-              selectedRoom === room.id ? 'active' : ''
-            }`}
+            className={`message-list-item p-0 ${selectedRoom === room.id ? 'active' : ''}`}
           >
             <div
               role="button"
@@ -275,11 +255,7 @@ const body = {
               }}
             >
               <div className="message-content">
-                <img
-                  src={room.photo || profilephoto1}
-                  alt={room.name}
-                  className="profile-img"
-                />
+                <img src={room.photo || profilephoto1} alt={room.name} className="profile-img" />
               </div>
 
               <div className="message-body">
@@ -287,10 +263,7 @@ const body = {
                   <span className="room-name">{room.name}</span>
                   <span className="time-text">
                     {room.last_message
-                      ? formatTime(
-                          room.last_message.timestamp ||
-                            room.last_message.created_at,
-                        )
+                      ? formatTime(room.last_message.timestamp || room.last_message.created_at)
                       : ''}
                   </span>
                 </div>
@@ -307,9 +280,7 @@ const body = {
           </ListGroup.Item>
         ))
       ) : (
-        <ListGroup.Item className="no-messages">
-          No group messages available
-        </ListGroup.Item>
+        <ListGroup.Item className="no-messages">No group messages available</ListGroup.Item>
       )}
     </ListGroup>
   );
