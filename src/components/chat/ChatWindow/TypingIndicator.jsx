@@ -1,16 +1,6 @@
-// TypingIndicator.jsx
 import React from 'react';
 
-const TypingIndicator = ({ typing }) =>
-  typing ? (
-    <div className="typing-indicator">
-      <span>User is typing...</span>
-      <span className="dots" aria-hidden="true">
-        <span className="dot" />
-        <span className="dot" />
-        <span className="dot" />
-      </span>
-    </div>
-  ) : null;
-
-export default TypingIndicator;
+export default function TypingIndicator({ typing }) {
+  if (!typing) return null;
+  return <div className="typing-indicator">User is typing...</div>;
+}

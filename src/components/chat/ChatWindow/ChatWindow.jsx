@@ -1,4 +1,3 @@
-// src/components/ChatWindow.jsx
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Form, Button, Spinner, Alert } from 'react-bootstrap';
 import { useDispatch } from 'react-redux';
@@ -12,11 +11,16 @@ import useDesktopNotify from '@/hooks/useDesktopNotify';
 import useTitleBadge from '@/hooks/useTitleBadge';
 import useTypingEcho from '@/hooks/useTypingEcho';
 
-import MessageList from '@/MessageList';
+import ChatMessagesList from '@/ChatMessagesList';
 import TypingIndicator from '@/TypingIndicator';
+
+// ---------- debug flags ----------
+const DEV = import.meta.env.DEV === true;
+const DEBUG_CHAT = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 
 // ---------- helpers ----------
 const coerceId = (v) => (v == null ? null : Number(v) || String(v));
+
 const normPacket = (packet) => {
   if (!packet) return null;
   if (packet.type === 'message' && !packet.message && packet.data) {
@@ -24,7 +28,31 @@ const normPacket = (packet) => {
   }
   return packet;
 };
-const msgKey = (m) => `${coerceId(m?.id)}|${coerceId(m?.room_id)}`;
+
+// ✅ key: handle both room_id and chat_room_id
+const getRoomIdFromMsg = (m) =>
+  coerceId(m?.room_id ?? m?.chat_room_id ?? m?.roomId ?? m?.room?.id ?? null);
+
+const msgKey = (m) => {
+  const mid = coerceId(m?.id);
+  const rid = getRoomIdFromMsg(m);
+  return `${mid}|${rid}`;
+};
+
+const getSenderIdFromMsg = (m) =>
+  coerceId(m?.sender_id ?? m?.user_id ?? m?.sender?.id ?? m?.user?.id ?? null);
+
+const previewMsg = (m) => {
+  if (!m) return null;
+  return {
+    id: coerceId(m.id),
+    room: getRoomIdFromMsg(m),
+    sender: getSenderIdFromMsg(m),
+    content: String(m?.content ?? '').slice(0, 60),
+    created_at: m?.created_at ?? m?.createdAt ?? null,
+    keys: Object.keys(m || {}).slice(0, 12),
+  };
+};
 
 // throttle ساده برای typing (هر 700ms یکبار)
 function useThrottleMs(ms = 700) {
@@ -57,11 +85,43 @@ export default function ChatWindow({
 
   const sendJsonMessageRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+      const messagesRef = useRef(null);
+
+  // ✅ debug trace refs
+  const traceRef = useRef({
+    roomId: null,
+    lastLen: 0,
+    lastKey: null,
+    lastPktType: null,
+    lastPktAt: 0,
+    lastMsgPreview: null,
+    dedupHits: 0,
+    added: 0,
+    updated: 0,
+    droppedWrongRoom: 0,
+  });
 
   // dedup per-room (وقتی roomId عوض شود پاک می‌کنیم)
   const seenRef = useRef(new Set());
   useEffect(() => {
     seenRef.current = new Set();
+    traceRef.current = {
+      ...traceRef.current,
+      roomId,
+      lastLen: 0,
+      lastKey: null,
+      lastPktType: null,
+      lastPktAt: Date.now(),
+      lastMsgPreview: null,
+      dedupHits: 0,
+      added: 0,
+      updated: 0,
+      droppedWrongRoom: 0,
+    };
+
+    if (DEBUG_CHAT) {
+      console.log('[ChatWindow] room changed -> reset dedup/trace', { roomId });
+    }
   }, [roomId]);
 
   const { messages, setMessages, loading, fetchError } = useRoomMessages(
@@ -73,36 +133,122 @@ export default function ChatWindow({
   const { show } = useDesktopNotify();
   const { bump } = useTitleBadge();
 
+  // ✅ log messages changes (track new received)
+  useEffect(() => {
+    if (!DEBUG_CHAT) return;
+
+    const t = traceRef.current;
+    const len = Array.isArray(messages) ? messages.length : 0;
+    const last = len ? messages[len - 1] : null;
+
+    // فقط وقتی len یا lastKey تغییر کرد لاگ کنیم
+    const lk = last ? msgKey(last) : null;
+    if (len !== t.lastLen || lk !== t.lastKey) {
+      t.lastLen = len;
+      t.lastKey = lk;
+      t.lastMsgPreview = previewMsg(last);
+
+      console.log('[ChatWindow] messages changed', {
+        roomId,
+        len,
+        lastKey: lk,
+        lastMsg: t.lastMsgPreview,
+        stats: {
+          added: t.added,
+          updated: t.updated,
+          dedupHits: t.dedupHits,
+          droppedWrongRoom: t.droppedWrongRoom,
+        },
+      });
+    }
+  }, [messages, roomId]);
+
   // ---------- Packet handler ----------
   const handlePacket = useCallback(
     (raw) => {
       const packet = normPacket(raw);
       if (!packet?.type) return;
 
+      const t = traceRef.current;
+      t.lastPktType = packet.type;
+      t.lastPktAt = Date.now();
+
+      if (DEBUG_CHAT) {
+        console.log('[ChatWindow] packet', {
+          roomId,
+          type: packet.type,
+          keys: Object.keys(packet || {}),
+          rawPreview: JSON.stringify(packet).slice(0, 180),
+        });
+      }
+
       switch (packet.type) {
         case 'message': {
           const m = packet.message;
-          if (!m) return;
+          if (!m) {
+            if (DEBUG_CHAT) console.warn('[ChatWindow] message packet without message field', packet);
+            return;
+          }
+
+          const incomingRoomId = getRoomIdFromMsg(m);
+          const activeRoomId = coerceId(roomId);
+
+          // ✅ اگر پیام برای روم دیگری است، drop کن (یا اگر می‌خوای global نگه داری، این شرط رو بردار)
+          if (activeRoomId != null && incomingRoomId != null && String(incomingRoomId) !== String(activeRoomId)) {
+            t.droppedWrongRoom += 1;
+            if (DEBUG_CHAT) {
+              console.warn('[ChatWindow] DROP message for other room', {
+                activeRoomId,
+                incomingRoomId,
+                msg: previewMsg(m),
+              });
+            }
+
+            // ولی هنوز می‌تونی redux global رو آپدیت کنی
+            dispatch(updateMessages({ type: 'message', message: m }));
+            return;
+          }
 
           const key = msgKey(m);
+
+          // ✅ dedup + merge
           if (!seenRef.current.has(key)) {
             seenRef.current.add(key);
+            t.added += 1;
+
+            if (DEBUG_CHAT) {
+              console.log('[ChatWindow] ADD message', {
+                key,
+                msg: previewMsg(m),
+              });
+            }
+
             setMessages((prev) => {
-              const idx = prev.findIndex((x) => msgKey(x) === key);
-              if (idx === -1) return [...prev, m];
-              const next = prev.slice();
+              const arr = Array.isArray(prev) ? prev : [];
+              const idx = arr.findIndex((x) => msgKey(x) === key);
+              if (idx === -1) return [...arr, m];
+
+              // اگر پیدا شد، merge کن
+              const next = arr.slice();
               next[idx] = { ...next[idx], ...m };
+              t.updated += 1;
               return next;
             });
+          } else {
+            t.dedupHits += 1;
+            if (DEBUG_CHAT) {
+              console.log('[ChatWindow] DEDUP hit', { key, msg: previewMsg(m) });
+            }
           }
 
           // redux global store update (اگر لازم داری)
           dispatch(updateMessages({ type: 'message', message: m }));
 
-          const fromOther =
-            m?.sender_id && currentUserId && m.sender_id !== currentUserId;
-          const isSystem =
-            String(m?.sender_name || '').toLowerCase() === 'system';
+          const senderId = getSenderIdFromMsg(m);
+          const meId = coerceId(currentUserId);
+
+          const fromOther = senderId != null && meId != null && String(senderId) !== String(meId);
+          const isSystem = String(m?.sender_name || m?.user?.name || '').toLowerCase() === 'system';
 
           // read receipt (فقط در django ws)
           if (fromOther && IS_DJANGO) {
@@ -111,14 +257,20 @@ export default function ChatWindow({
                 type: 'read_receipt_confirmation',
                 message_id: m.id,
               });
-            } catch {}
+              if (DEBUG_CHAT) console.log('[ChatWindow] sent read_receipt_confirmation', { message_id: m.id });
+            } catch (e) {
+              if (DEBUG_CHAT) console.warn('[ChatWindow] read_receipt_confirmation failed', e);
+            }
           }
 
           if (fromOther && !isSystem) {
             try {
-              show(m.sender_name || 'پیام جدید', m.content || '', { always: true });
+              show(m.sender_name || m?.user?.name || 'پیام جدید', m.content || '', { always: true });
               bump();
-            } catch {}
+              if (DEBUG_CHAT) console.log('[ChatWindow] notify+bump', { fromOther, senderId, meId });
+            } catch (e) {
+              if (DEBUG_CHAT) console.warn('[ChatWindow] notify failed', e);
+            }
           }
           break;
         }
@@ -130,30 +282,41 @@ export default function ChatWindow({
           if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
           setTypingUserId(uid);
 
+          if (DEBUG_CHAT) console.log('[ChatWindow] typing_indicator', { uid });
+
           typingTimeoutRef.current = setTimeout(() => {
             dispatch(resetTypingIndicator(uid));
             setTypingUserId(null);
+            if (DEBUG_CHAT) console.log('[ChatWindow] typing cleared', { uid });
           }, 3500);
           break;
         }
 
         case 'message_received': {
           const mid = coerceId(packet.message);
-          setMessages((prev) =>
-            prev.map((x) => (coerceId(x.id) === mid ? { ...x, read_receipt: true } : x))
-          );
+          if (DEBUG_CHAT) console.log('[ChatWindow] message_received', { mid });
+
+          setMessages((prev) => {
+            const arr = Array.isArray(prev) ? prev : [];
+            return arr.map((x) => (coerceId(x.id) === mid ? { ...x, read_receipt: true } : x));
+          });
           break;
         }
 
         case 'message_updated': {
           const m = packet.message;
           if (!m) return;
+
           const key = msgKey(m);
+          if (DEBUG_CHAT) console.log('[ChatWindow] message_updated', { key, msg: previewMsg(m) });
+
           setMessages((prev) => {
-            const idx = prev.findIndex((x) => msgKey(x) === key);
-            if (idx === -1) return prev;
-            const next = prev.slice();
+            const arr = Array.isArray(prev) ? prev : [];
+            const idx = arr.findIndex((x) => msgKey(x) === key);
+            if (idx === -1) return arr;
+            const next = arr.slice();
             next[idx] = { ...next[idx], ...m };
+            traceRef.current.updated += 1;
             return next;
           });
           break;
@@ -161,15 +324,21 @@ export default function ChatWindow({
 
         case 'message_deleted': {
           const mid = coerceId(packet.message);
-          setMessages((prev) => prev.filter((x) => coerceId(x.id) !== mid));
+          if (DEBUG_CHAT) console.log('[ChatWindow] message_deleted', { mid });
+
+          setMessages((prev) => {
+            const arr = Array.isArray(prev) ? prev : [];
+            return arr.filter((x) => coerceId(x.id) !== mid);
+          });
           break;
         }
 
         default:
+          if (DEBUG_CHAT) console.log('[ChatWindow] unhandled packet type', packet.type);
           break;
       }
     },
-    [dispatch, currentUserId, IS_DJANGO, setMessages, show, bump]
+    [dispatch, currentUserId, IS_DJANGO, setMessages, show, bump, roomId]
   );
 
   // ---------- Reverb typing/messages ----------
@@ -234,7 +403,6 @@ export default function ChatWindow({
 
       setUiError(null);
 
-      // optimistic message
       const tempId = `tmp-${Date.now()}`;
       const optimistic = {
         id: tempId,
@@ -246,7 +414,14 @@ export default function ChatWindow({
         _optimistic: true,
       };
 
-      setMessages((prev) => [...prev, optimistic]);
+      if (DEBUG_CHAT) {
+        console.log('[ChatWindow] SEND optimistic', { roomId, optimistic: previewMsg(optimistic) });
+      }
+
+      setMessages((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        return [...arr, optimistic];
+      });
       setMessageInput('');
 
       // Django: WS
@@ -257,9 +432,11 @@ export default function ChatWindow({
         }
         try {
           sendJsonMessageRef.current?.({ type: 'chat_message', content: text });
+          if (DEBUG_CHAT) console.log('[ChatWindow] WS send ok');
           return;
         } catch (err) {
           setUiError(err?.message || 'WS send failed');
+          if (DEBUG_CHAT) console.warn('[ChatWindow] WS send failed', err);
           return;
         }
       }
@@ -284,24 +461,26 @@ export default function ChatWindow({
         }
 
         const saved = await resp.json().catch(() => ({}));
+        if (DEBUG_CHAT) console.log('[ChatWindow] POST saved', saved);
 
-        // replace optimistic with server message (اگر برگشت)
         if (saved?.id) {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === tempId ? { ...saved, _optimistic: false } : m))
-          );
+          setMessages((prev) => {
+            const arr = Array.isArray(prev) ? prev : [];
+            return arr.map((m) => (m.id === tempId ? { ...saved, _optimistic: false } : m));
+          });
         } else {
-          // اگر سرور چیزی نداد، فقط optimistic را غیر-optimistic کن
-          setMessages((prev) =>
-            prev.map((m) => (m.id === tempId ? { ...m, _optimistic: false } : m))
-          );
+          setMessages((prev) => {
+            const arr = Array.isArray(prev) ? prev : [];
+            return arr.map((m) => (m.id === tempId ? { ...m, _optimistic: false } : m));
+          });
         }
       } catch (err) {
-        // mark as failed (می‌تونی دکمه retry هم اضافه کنی)
-        setMessages((prev) =>
-          prev.map((m) => (m.id === tempId ? { ...m, _failed: true } : m))
-        );
+        setMessages((prev) => {
+          const arr = Array.isArray(prev) ? prev : [];
+          return arr.map((m) => (m.id === tempId ? { ...m, _failed: true } : m));
+        });
         setUiError(err?.message || 'Failed to send message');
+        if (DEBUG_CHAT) console.warn('[ChatWindow] POST send failed', err);
       }
     },
     [
@@ -333,8 +512,10 @@ export default function ChatWindow({
           type: 'typing_indicator',
           sender_id: currentUserId,
         });
+        if (DEBUG_CHAT) console.log('[ChatWindow] typing emit (django)', { currentUserId });
       } else if (IS_REVERB) {
         emitTyping(currentUserId);
+        if (DEBUG_CHAT) console.log('[ChatWindow] typing emit (reverb)', { currentUserId });
       }
     },
     [currentUserId, IS_DJANGO, IS_REVERB, emitTyping, canEmitTyping]
@@ -356,7 +537,23 @@ export default function ChatWindow({
 
       <div className="connection-status">{connectionStatus}</div>
 
-      <MessageList messages={messages} currentUserId={currentUserId} />
+      {/* ✅ optional overlay debug */}
+      {DEBUG_CHAT && (
+        <div style={{ padding: '6px 10px', fontSize: 12, opacity: 0.85, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+          <div>roomId: {String(roomId)} | kind: {kind}</div>
+          <div>
+            msgs: {Array.isArray(messages) ? messages.length : 0} | me: {String(currentUserId ?? 'null')}
+          </div>
+        </div>
+      )}
+
+
+<ChatMessagesList
+  messages={messages}
+  currentUserId={currentUserId}
+  containerRef={messagesRef}
+/>
+
       <TypingIndicator typing={typingUserId} />
 
       <Form onSubmit={handleSendMessage} className="chat-input-form">

@@ -1,12 +1,11 @@
-// src/components/HomeChat/HomeChat.jsx
-import React, { useEffect, useMemo, useReducer } from 'react';
+import React, { useEffect, useMemo, useReducer, useRef } from 'react';
 import { Container, Row, Col } from 'react-bootstrap';
 import { useDispatch } from 'react-redux';
 
 import BackendPicker from '@/components/BackendPicker';
 import LogoutButton from '@/components/auth/LogoutButton';
 import Header from '@/components/Header';
-import MessageList from '@/components/MessageList';
+import ConversationList from '@/components/ConversationList';
 import ChatWindow from '@/components/ChatWindow';
 import UserModal from '@/components/UserModal';
 
@@ -25,8 +24,10 @@ import { useChatLists } from '@/hooks/chat/useChatLists';
 import useEvent from '@/hooks/useEvent';
 import './HomeChat.css';
 
-const STORAGE_KEY = 'homechat:selectedRoomId';
-const DEBUG = import.meta.env.DEV === true;
+// ✅ debug is opt-in via env to avoid spam
+const DEBUG_CHAT =
+  import.meta.env.DEV === true &&
+  String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 
 function reducer(state, action) {
   switch (action.type) {
@@ -36,14 +37,13 @@ function reducer(state, action) {
       return { ...state, showUsers: action.value ?? !state.showUsers };
     case 'SELECT_ROOM':
       return { ...state, roomId: action.roomId ?? null };
-    case 'RESTORE_ROOM':
-      return { ...state, roomId: action.roomId ?? null, restored: true };
     default:
       return state;
   }
 }
 
-const initialState = { q: '', roomId: null, showUsers: false, restored: false };
+// ✅ restored removed (we don't restore room from storage anymore)
+const initialState = { q: '', roomId: null, showUsers: false };
 
 function EmptyRoom() {
   return (
@@ -73,25 +73,91 @@ const toIdStr = (u) => {
   return id == null ? null : String(id);
 };
 
+const safeLen = (arr) => (Array.isArray(arr) ? arr.length : 0);
+const stableJson = (x) => {
+  try {
+    return JSON.stringify(x);
+  } catch {
+    return String(x);
+  }
+};
+
 export default function HomeChat() {
   const dispatch = useDispatch();
   const [state, ui] = useReducer(reducer, initialState);
-  const { q, roomId, showUsers, restored } = state;
+  const { q, roomId, showUsers } = state;
 
   const { backendChoice, effectiveKind, handleChangeBackend } = useBackendChoice();
   const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
 
   const { bareToken, currentUser, currentUserId } = useAuthBasics();
 
-  const { dmList, groupList, typingIndicators, loading, error } = useChatLists({ searchQuery: q });
-  const { retryRooms } = useChatData({ endpoints, accessToken: bareToken });
+  // lists
+  const { dmList, groupList, typingIndicators, loading, error } = useChatLists({
+    searchQuery: q,
+  });
 
+  // rooms/data
+  const { retryRooms } = useChatData({ endpoints, accessToken: bareToken });
+useEffect(() => {
+  console.log('[HomeChat] FORCE rooms debug', {
+    endpointsKeys: endpoints ? Object.keys(endpoints) : null,
+    roomsUrl: endpoints?.rooms,
+    hasToken: Boolean(bareToken),
+    tokenPreview: (bareToken || '').slice(0, 18) + '...',
+    retryRoomsType: typeof retryRooms,
+    retryRoomsValue: retryRooms,
+  });
+
+  // 1) اگر retryRooms درست باشد اجرا می‌شود
+  if (typeof retryRooms === 'function') {
+    console.log('[HomeChat] calling retryRooms()...');
+    retryRooms();
+  } else {
+    console.warn('[HomeChat] retryRooms is NOT a function -> will do direct fetch test');
+  }
+
+  // 2) ✅ تست مستقیم (حتی اگر hook مشکل داشت)
+  (async () => {
+    try {
+      if (!endpoints?.rooms) return console.warn('[HomeChat] roomsUrl missing');
+      if (!bareToken) return console.warn('[HomeChat] token missing');
+
+      const res = await fetch(endpoints.rooms, {
+        headers: {
+          Authorization: `Bearer ${bareToken}`,
+          Accept: 'application/json',
+        },
+      });
+
+      const text = await res.text();
+
+      console.log('[HomeChat] DIRECT rooms fetch result', {
+        ok: res.ok,
+        status: res.status,
+        contentType: res.headers.get('content-type'),
+        preview: (text || '').slice(0, 220),
+      });
+    } catch (e) {
+      console.error('[HomeChat] DIRECT rooms fetch exception', e);
+    }
+  })();
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+  // users query ✅
+  const { usersQ, filteredUsers, handleFriendshipRequest, handleRespondFriendRequest } =
+    useUsersQuery({ bareToken, searchQuery: q, retryRooms });
+
+  // global notif handler (stable)
   const onGlobalNotif = useGlobalNotify({
     selectedRoom: roomId,
     setSelectedRoom: (id) => ui({ type: 'SELECT_ROOM', roomId: id }),
   });
 
-  const { onlineUsers } = usePresence({
+  // presence
+  const { onlineUsers, connState } = usePresence({
     backendKind: effectiveKind,
     token: bareToken,
     currentUserId,
@@ -112,40 +178,11 @@ export default function HomeChat() {
   const dmListWithPresence = useMemo(() => {
     const list = Array.isArray(dmList) ? dmList : [];
     return list.map((convo) => {
-      const pid =
-        convo?.partnerId ??
-        convo?.partner?.id ??
-        convo?.user_id ??
-        null;
-
+      const pid = convo?.partnerId ?? convo?.partner?.id ?? convo?.user_id ?? null;
       const isOnline = pid != null ? onlineIdSet.has(String(pid)) : false;
       return { ...convo, is_online: isOnline };
     });
   }, [dmList, onlineIdSet]);
-
-  // --- persist selected room ---
-  useEffect(() => {
-    if (restored) return;
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      const parsed = saved ? Number(saved) : null;
-      if (parsed) {
-        ui({ type: 'RESTORE_ROOM', roomId: parsed });
-        dispatch(selectRoom(parsed));
-      } else {
-        ui({ type: 'RESTORE_ROOM', roomId: null });
-      }
-    } catch {
-      ui({ type: 'RESTORE_ROOM', roomId: null });
-    }
-  }, [dispatch, restored]);
-
-  useEffect(() => {
-    try {
-      if (roomId) localStorage.setItem(STORAGE_KEY, String(roomId));
-      else localStorage.removeItem(STORAGE_KEY);
-    } catch {}
-  }, [roomId]);
 
   // --- handlers ---
   const onSelectChat = useEvent((nextRoomId, receiverId) => {
@@ -162,32 +199,85 @@ export default function HomeChat() {
   const setSearchQuery = useEvent((value) => ui({ type: 'SET_QUERY', q: value }));
   const setShowUsers = useEvent((value) => ui({ type: 'TOGGLE_USERS', value }));
 
-  // users query
-  const { usersQ, filteredUsers, handleFriendshipRequest, handleRespondFriendRequest } =
-    useUsersQuery({ bareToken, searchQuery: q, retryRooms });
+  // =========================
+  // ✅ DEBUGS (no spam)
+  // =========================
+  const prevRef = useRef({ state: '', presence: '', dm: '', usersQ: '', conn: '' });
 
-  // ✅ Debug (فقط وقتی تغییر واقعی هست)
   useEffect(() => {
-    if (!DEBUG) return;
-    console.log('[HomeChat] presence debug', {
+    if (!DEBUG_CHAT) return;
+    const sig = stableJson({ connState });
+    if (sig !== prevRef.current.conn) {
+      prevRef.current.conn = sig;
+      console.log('[HomeChat] ws state', { connState });
+    }
+  }, [connState]);
+
+  useEffect(() => {
+    if (!DEBUG_CHAT) return;
+
+    const payload = {
       backend: effectiveKind,
+      roomId,
+      qLen: (q || '').length,
       currentUserId,
-      onlineUsersCount: Array.isArray(onlineUsers) ? onlineUsers.length : 0,
-      onlineIds: Array.from(onlineIdSet),
-    });
-  }, [DEBUG, effectiveKind, currentUserId, onlineUsers, onlineIdSet]);
+      hasToken: Boolean(bareToken),
+    };
+    const sig = stableJson(payload);
+
+    if (sig !== prevRef.current.state) {
+      prevRef.current.state = sig;
+      console.log('[HomeChat] state signature', payload);
+    }
+  }, [effectiveKind, roomId, q, currentUserId, bareToken]);
 
   useEffect(() => {
-    if (!DEBUG) return;
-    console.log('[HomeChat] dm list debug', {
-      dmCount: dmListWithPresence.length,
-      sample: dmListWithPresence.slice(0, 3).map((x) => ({
-        partnerId: x.partnerId,
-        roomId: x.roomId,
-        is_online: x.is_online,
-      })),
-    });
-  }, [DEBUG, dmListWithPresence]);
+    if (!DEBUG_CHAT) return;
+
+    const ids = Array.from(onlineIdSet);
+    const payload = { backend: effectiveKind, currentUserId, onlineCount: ids.length, onlineIds: ids };
+    const sig = stableJson(payload);
+
+    if (sig !== prevRef.current.presence) {
+      prevRef.current.presence = sig;
+      console.log('[HomeChat] presence', payload);
+    }
+  }, [effectiveKind, currentUserId, onlineIdSet]);
+
+  useEffect(() => {
+    if (!DEBUG_CHAT) return;
+
+    const sample = dmListWithPresence.slice(0, 3).map((x) => ({
+      roomId: x.roomId ?? x.id ?? null,
+      partnerId: x.partnerId ?? x?.partner?.id ?? x?.user_id ?? null,
+      is_online: Boolean(x.is_online),
+    }));
+
+    const payload = { dmCount: dmListWithPresence.length, sample };
+    const sig = stableJson(payload);
+
+    if (sig !== prevRef.current.dm) {
+      prevRef.current.dm = sig;
+      console.log('[HomeChat] dm list', payload);
+    }
+  }, [dmListWithPresence]);
+
+  useEffect(() => {
+    if (!DEBUG_CHAT) return;
+
+    const payload = {
+      isLoading: Boolean(usersQ?.isLoading),
+      isFetching: Boolean(usersQ?.isFetching),
+      hasError: Boolean(usersQ?.error),
+      filteredUsersCount: safeLen(filteredUsers),
+    };
+    const sig = stableJson(payload);
+
+    if (sig !== prevRef.current.usersQ) {
+      prevRef.current.usersQ = sig;
+      console.log('[HomeChat] usersQ', payload);
+    }
+  }, [usersQ?.isLoading, usersQ?.isFetching, usersQ?.error, filteredUsers]);
 
   return (
     <Container fluid className="messages-container">
@@ -203,7 +293,7 @@ export default function HomeChat() {
       <Row>
         <Col md={4} className="messages-list">
           <Gate loading={loading} error={error} onRetry={onRetryAll}>
-            <MessageList
+            <ConversationList
               filteredIndividualMessages={dmListWithPresence}
               filteredGroupMessages={groupList}
               handleSelectChat={onSelectChat}
@@ -217,7 +307,9 @@ export default function HomeChat() {
 
         <Col md={8}>
           {roomId ? (
+            // ✅ hard remount on room change => never show old room messages
             <ChatWindow
+              key={roomId}
               roomId={roomId}
               endpoints={endpoints}
               effectiveKind={effectiveKind}
@@ -233,8 +325,8 @@ export default function HomeChat() {
       <UserModal
         showUserDropdown={showUsers}
         setShowUserDropdown={setShowUsers}
-        loadingUsers={usersQ.isLoading}
-        errorUsers={usersQ.error}
+        loadingUsers={usersQ?.isLoading}
+        errorUsers={usersQ?.error}
         currentUser={currentUser}
         filteredUsers={filteredUsers}
         handleFriendshipRequest={handleFriendshipRequest}

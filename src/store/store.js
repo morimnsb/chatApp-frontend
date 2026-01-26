@@ -7,7 +7,7 @@ import authReducer from '@/store/authSlice';
 import messagesEntityReducer from '@/store/messageEntitySlice';
 import messageReducer from '@/reducers/messageReducer';
 
-// آموزشی‌ها / پیشرفته‌ها
+// advanced
 import listenerMiddleware from '@/store/listeners';
 import wsReducer from '@/store/wsReducer';
 import { apiSlice } from '@/services/apiSlice';
@@ -16,47 +16,74 @@ import wsMiddleware from '@/store/wsMiddleware';
 // ---------- ENV ----------
 const IS_PROD = import.meta.env.PROD === true;
 
-// ---------- Root Reducer (برای HMR و ساختار تمیز) ----------
+// ✅ logger is OPT-IN (default OFF)
+const DEV = import.meta.env.DEV === true;
+const REDUX_LOG = DEV && String(import.meta.env.VITE_REDUX_LOG || '') === 'true';
 
-const makeRootReducer = () =>
+// RTK Query noisy actions (we usually don't want to log them)
+const NOISY_PREFIXES = [
+  `${apiSlice.reducerPath}/internalSubscriptions/`,
+  `${apiSlice.reducerPath}/executeQuery/`,
+  `${apiSlice.reducerPath}/executeMutation/`,
+  `${apiSlice.reducerPath}/config/`,
+];
+
+// ---------- Root Reducer ----------
+const createRootReducer = () =>
   combineReducers({
     auth: authReducer,
 
-    // legacy reducer (قدیمی‌تر)
+    // legacy reducer
     messages: messageReducer,
 
-    // WebSocket state (isConnected, lastPacket, ...)
+    // WebSocket state
     ws: wsReducer,
 
     // RTK Query slice
     [apiSlice.reducerPath]: apiSlice.reducer,
 
-    // ✅ اسلایس جدید entity-based
+    // entity-based slice
     messagesEntity: messagesEntityReducer,
   });
 
-const rootReducer = makeRootReducer();
-
-// ---------- Dev-only Logger Middleware (بدون لایبرری) ----------
+// ---------- Dev-only Logger Middleware ----------
 const devLoggerMiddleware = (storeAPI) => (next) => (action) => {
-  if (IS_PROD) return next(action);
+  if (!REDUX_LOG) return next(action);
 
+  const type = action?.type || '';
   const startedAt = performance.now();
   const result = next(action);
   const endedAt = performance.now();
 
-  // فقط اکشن‌های مهم رو چاپ کن (آموزشی)
-  const type = action.type || '';
+  // filter spam
+  const isNoisy = NOISY_PREFIXES.some((p) => type.startsWith(p));
+  if (isNoisy) return result;
+
   const isAuth = type.startsWith('auth/');
   const isWs = type.startsWith('ws/');
-  const isApi = type.startsWith(apiSlice.reducerPath + '/');
+  const isApi = type.startsWith(`${apiSlice.reducerPath}/`);
 
+  // only important categories
   if (isAuth || isWs || isApi) {
+    // ⚠️ DO NOT print full store state (heavy + huge spam)
+    // Print small snapshot only
+    const state = storeAPI.getState();
+    const tiny = {
+      auth: {
+        id: state.auth?.currentUser?.id ?? null,
+        hasToken: Boolean(state.auth?.access_token || state.auth?.token),
+      },
+      ws: {
+        isConnected: Boolean(state.ws?.isConnected),
+        status: state.ws?.status ?? null,
+      },
+    };
+
     // eslint-disable-next-line no-console
-    console.log(`%c[REDUX] ${type}`, 'color:#7dd3fc;font-weight:bold;', {
+    console.log(`%c[REDUX] ${type}`, 'color:#7dd3fc;font-weight:900;', {
+      ms: Number(endedAt - startedAt).toFixed(1),
       payload: action.payload,
-      ms: (endedAt - startedAt).toFixed(1),
-      stateSnapshot: storeAPI.getState(),
+      tiny,
     });
   }
 
@@ -64,32 +91,25 @@ const devLoggerMiddleware = (storeAPI) => (next) => (action) => {
 };
 
 // ---------- Store ----------
-
 export const store = configureStore({
-  reducer: rootReducer,
-
-  // ⚠️ دیگه اینجا preloadedState نمی‌ذاریم
-  // چون خود authSlice از localStorage هیدراته می‌کند.
-  // اگر بعداً برای sliceهای دیگر هم Hydration خواستی،
-  // بهتره هر کدوم داخل slice خودش انجام دهد.
+  reducer: createRootReducer(),
 
   middleware: (getDefaultMiddleware) => {
     const defaults = getDefaultMiddleware({
       thunk: true,
 
+      // ✅ keep checks ON in dev (but ignore known big/non-serializable parts)
       immutableCheck: IS_PROD
         ? false
         : {
             warnAfter: 128,
             ignoredPaths: [
-              'messages.items',
-              'messages.groups',
-              'messages.individual',
+              // legacy messages often huge
+              'messages',
+              // ws packets may contain non-serializable stuff
               'ws.lastPacket',
+              // RTKQ cache
               apiSlice.reducerPath,
-
-              // ✅ اگر بعداً چیز non-serializable تو messagesEntity بذاری
-              'messagesEntity',
             ],
           },
 
@@ -97,51 +117,35 @@ export const store = configureStore({
         ? false
         : {
             warnAfter: 128,
+            ignoredPaths: [
+              'ws.lastPacket',
+              apiSlice.reducerPath,
+            ],
             ignoredActions: [
-              // legacy messages ممکنه payloadهای غیرسریالایزبل داشته باشه
+              // if your legacy reducer sometimes stores non-serializable things
               'messages/updateMessages',
               'messages/setGroupMessages',
               'messages/setIndividualMessages',
-
-              // RTK Query actions (برای اطمینان آموزشی)
-              `${apiSlice.reducerPath}/executeQuery/pending`,
-              `${apiSlice.reducerPath}/executeQuery/fulfilled`,
-              `${apiSlice.reducerPath}/executeQuery/rejected`,
-              `${apiSlice.reducerPath}/executeMutation/pending`,
-              `${apiSlice.reducerPath}/executeMutation/fulfilled`,
-              `${apiSlice.reducerPath}/executeMutation/rejected`,
-            ],
-            ignoredPaths: [
-              'messages.ids',
-              'messages.entities',
-              'ws.lastPacket',
-              apiSlice.reducerPath,
             ],
           },
     });
 
-    // pipeline مرتب:
+    // ✅ order: listener -> rtkq -> ws -> logger
     return defaults
-      .concat(listenerMiddleware.middleware) // 1) listener
-      .concat(apiSlice.middleware) // 2) RTK Query
-      .concat(wsMiddleware) // 3) WebSocket middleware واقعی
-      .concat(devLoggerMiddleware); // 4) logger آموزشی
+      .concat(listenerMiddleware.middleware)
+      .concat(apiSlice.middleware)
+      .concat(wsMiddleware)
+      .concat(devLoggerMiddleware);
   },
 
   devTools: !IS_PROD,
-
-  // enhancers آموزشی (فعلاً خالی، آماده برای آینده)
-  enhancers: (getDefaultEnhancers) => {
-    const enh = getDefaultEnhancers();
-    return enh;
-  },
 });
 
 // ✅ RTK Query: enable refetchOnFocus/refetchOnReconnect
 setupListeners(store.dispatch);
 
-// ---------- HMR برای Vite ----------
-if (!IS_PROD && import.meta.hot) {
+// ---------- HMR (Vite) ----------
+if (DEV && import.meta.hot) {
   import.meta.hot.accept(
     [
       '@/store/authSlice',
@@ -151,9 +155,7 @@ if (!IS_PROD && import.meta.hot) {
       '@/services/apiSlice',
     ],
     () => {
-      // در HMR، rootReducer جدید بساز و روی store ست کن
-      const nextRootReducer = makeRootReducer();
-      store.replaceReducer(nextRootReducer);
+      store.replaceReducer(createRootReducer());
     },
   );
 }

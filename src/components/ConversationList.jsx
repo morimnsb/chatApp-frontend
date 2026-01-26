@@ -1,12 +1,18 @@
-// src/components/MessageList.jsx
-import React, { useMemo, useState, useCallback } from 'react';
+// src/components/ConversationList.jsx
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { ListGroup, Button, Spinner } from 'react-bootstrap';
 import axios from 'axios';
 import { formatTime } from '@/utils/formatTime';
 import profilephoto1 from '@/assets/images/message/profilephoto1.png';
-import './MessageList.css';
+import './ConversationList.css';
 
-const MessageList = ({
+const DEV = import.meta.env.DEV === true;
+const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+const log = (...a) => DEBUG && console.log('[ConversationList]', ...a);
+
+const safeArr = (v) => (Array.isArray(v) ? v : []);
+
+export default function ConversationList({
   filteredIndividualMessages,
   filteredGroupMessages,
   currentUser,
@@ -14,17 +20,18 @@ const MessageList = ({
   selectedRoom,
   typingIndicators = {},
   onRespondFriendRequest,
-}) => {
+}) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
 
+  // ✅ همیشه هوک‌ها بالای کامپوننت و بدون شرط/loop
   const individualMessages = useMemo(
-    () => (Array.isArray(filteredIndividualMessages) ? filteredIndividualMessages : []),
+    () => safeArr(filteredIndividualMessages),
     [filteredIndividualMessages],
   );
 
   const groupMessages = useMemo(
-    () => (Array.isArray(filteredGroupMessages) ? filteredGroupMessages : []),
+    () => safeArr(filteredGroupMessages),
     [filteredGroupMessages],
   );
 
@@ -36,17 +43,44 @@ const MessageList = ({
     [typingIndicators],
   );
 
-  const handleCreateGroup = async () => {
+  // ✅ debug snapshot (بدون اسپم: فقط وقتی تغییر می‌کند)
+  const prevSig = useRef('');
+  useEffect(() => {
+    if (!DEBUG) return;
+
+    const sigObj = {
+      selectedRoom,
+      dmCount: individualMessages.length,
+      groupCount: groupMessages.length,
+      dmSample: individualMessages.slice(0, 2).map((c) => ({
+        id: c?.id,
+        roomId: c?.roomId ?? c?.room_id ?? c?.chat_room_id,
+        partnerId: c?.partnerId ?? c?.partner_id ?? c?.user_id,
+        name: c?.first_name ?? c?.name ?? c?.email,
+        is_private: c?.is_private,
+      })),
+      groupSample: groupMessages.slice(0, 2).map((r) => ({
+        id: r?.id,
+        name: r?.name,
+        is_private: r?.is_private,
+      })),
+    };
+
+    const sig = JSON.stringify(sigObj);
+    if (sig !== prevSig.current) {
+      prevSig.current = sig;
+      log('snapshot', sigObj);
+    }
+  }, [DEBUG, selectedRoom, individualMessages, groupMessages]);
+
+  const handleCreateGroup = useCallback(async () => {
     setCreating(true);
     setCreateError('');
 
     try {
       const token = localStorage.getItem('access_token');
 
-      const body = {
-        name: 'ias: New Group Chat',
-        is_group: true,
-      };
+      const body = { name: 'ias: New Group Chat', is_group: true };
 
       const res = await axios.post('http://localhost:8000/api/rooms', body, {
         headers: {
@@ -56,15 +90,16 @@ const MessageList = ({
         },
       });
 
+      log('create group response', res?.data);
+
       if (res.data?.room?.id) {
         handleSelectChat(res.data.room.id);
       }
-    } catch (err) {
-      if (err?.response?.data) {
+    } catch (e) {
+      log('create group error', e);
+      if (e?.response?.data) {
         setCreateError(
-          typeof err.response.data === 'string'
-            ? err.response.data
-            : JSON.stringify(err.response.data),
+          typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data),
         );
       } else {
         setCreateError('Server error while creating group');
@@ -72,7 +107,7 @@ const MessageList = ({
     } finally {
       setCreating(false);
     }
-  };
+  }, [handleSelectChat]);
 
   return (
     <ListGroup className="message-list-wrapper">
@@ -83,8 +118,8 @@ const MessageList = ({
 
       {individualMessages.length > 0 ? (
         individualMessages.map((convo) => {
-          const roomId = convo.roomId || convo.room_id || convo.id;
-          const userId = convo.partnerId || convo.user_id || convo.id;
+          const roomId = convo.roomId || convo.room_id || convo.chat_room_id || convo.id;
+          const userId = convo.partnerId || convo.partner_id || convo.user_id || convo.id;
 
           const lastMsg = convo.last_message || convo.lastMessage || null;
           const lastTime =
@@ -95,14 +130,9 @@ const MessageList = ({
             null;
 
           const displayName =
-            convo.first_name ||
-            convo.firstName ||
-            convo.name ||
-            convo.email ||
-            `User #${userId}`;
+            convo.first_name || convo.firstName || convo.name || convo.email || `User #${userId}`;
 
-          const avatar = convo.photo || profilephoto1;
-
+          const avatar = convo.photo || convo.avatar || profilephoto1;
           const isActive = selectedRoom === roomId;
 
           const friendshipStatus = convo.friendship_status;
@@ -112,9 +142,7 @@ const MessageList = ({
           const isFriendReqOutgoing = friendshipStatus === 'pending_outgoing';
 
           const isSelf =
-            currentUser?.id &&
-            userId != null &&
-            Number(currentUser.id) === Number(userId);
+            currentUser?.id && userId != null && Number(currentUser.id) === Number(userId);
 
           let subtitle = '';
           if (isFriendReqIncoming) subtitle = 'sent you a friend request';
@@ -138,13 +166,12 @@ const MessageList = ({
                 }}
               >
                 <div className="message-content">
-  <img
-    src={avatar}
-    alt={displayName}
-    className={`profile-img ${convo.is_online ? 'is-online' : 'is-offline'}`}
-  />
-</div>
-
+                  <img
+                    src={avatar}
+                    alt={displayName}
+                    className={`profile-img ${convo.is_online ? 'is-online' : 'is-offline'}`}
+                  />
+                </div>
 
                 <div className="message-body">
                   <div className="message-header">
@@ -260,7 +287,7 @@ const MessageList = ({
 
               <div className="message-body">
                 <div className="message-header">
-                  <span className="room-name">{room.name}</span>
+                  <span className="room-name">{room.name || `Room #${room.id}`}</span>
                   <span className="time-text">
                     {room.last_message
                       ? formatTime(room.last_message.timestamp || room.last_message.created_at)
@@ -269,11 +296,9 @@ const MessageList = ({
                 </div>
 
                 <div className="message-details">
-                  <span className="subtext">{room.last_message?.content}</span>
+                  <span className="subtext">{room.last_message?.content || ''}</span>
 
-                  {room.unread_count > 0 && (
-                    <span className="unread_count">{room.unread_count}</span>
-                  )}
+                  {room.unread_count > 0 && <span className="unread_count">{room.unread_count}</span>}
                 </div>
               </div>
             </div>
@@ -284,6 +309,4 @@ const MessageList = ({
       )}
     </ListGroup>
   );
-};
-
-export default MessageList;
+}

@@ -1,96 +1,100 @@
-// src/components/ChatWindow.js
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Form, Button, Spinner, Alert } from 'react-bootstrap';
 import { useSelector, useDispatch } from 'react-redux';
 import { jwtDecode } from 'jwt-decode';
-import useFetch from '@/hooks/useFetch';
-import { resetTypingIndicator, updateMessages } from '@/actions/messageActions';
-import { formatTime } from '@/utils/formatTime';
-import profilephoto1 from '@/assets/images/message/profilephoto1.png';
 import { toast } from 'react-toastify';
 
-// ⭐ فقط این هوک برای WS استفاده می‌شود
+import useFetch from '@/hooks/useFetch';
 import useRoomTransport from '@/hooks/useRoomTransport';
 
+import { resetTypingIndicator, updateMessages } from '@/actions/messageActions';
+
+import ChatMessagesList from '@/components/chat/ChatWindow/ChatMessagesList';
+import TypingIndicator from '@/components/chat/ChatWindow/TypingIndicator';
+
+import { useAutoScroll } from '@/components/chat/hooks/useAutoScroll';
+import { useDocTitleBadge } from '@/components/chat/hooks/useDocTitleBadge';
+
+/* ----------------------------- helpers ----------------------------- */
+
+const ROOM_TAG = '[ChatWindow]';
+const DEV = import.meta.env.DEV === true;
+const DEBUG_LEVEL = DEV ? Number(import.meta.env.VITE_WS_DEBUG_LEVEL || 0) : 0;
+
+const log = (lvl, ...args) => DEBUG_LEVEL >= lvl && console.log(...args);
+const warn = (...args) => DEBUG_LEVEL >= 1 && console.warn(...args);
+const err = (...args) => DEBUG_LEVEL >= 1 && console.error(...args);
+
 const isJwt = (t) => typeof t === 'string' && t.split('.').length === 3;
-const stripBearer = (t) => (t || '').toString().replace(/^Bearer\s+/i, '');
+const stripBearer = (t) => (t || '').toString().replace(/^Bearer\s+/i, '').trim();
 
-// ✅ لاگ‌ها کم و قابل کنترل
-const ROOM_DEBUG = '[ChatWindow]';
-const DEBUG = Boolean(import.meta.env.VITE_WS_DEBUG) && import.meta.env.DEV;
-const dlog = (...args) => DEBUG && console.log(...args);
-const dwarn = (...args) => DEBUG && console.warn(...args);
-const derr = (...args) => DEBUG && console.error(...args);
-
-const MessageBubble = React.memo(({ message, currentUserId }) => (
-  <div className="message-bubble">
-    {message.sender_first_name && (
-      <div className="chat-header-details">
-        <img
-          src={message.photo || profilephoto1}
-          alt={message.sender_first_name}
-          className="chat-header-img"
-        />
-        <div className="chat-header-info">
-          <h4>{message.sender_first_name}</h4>
-        </div>
+/* ✅ Only show a message (no previous room UI) */
+function SelectRoomPlaceholder() {
+  return (
+    <div className="no-chat-selected">
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: 16, fontWeight: 800 }}>هیچ گفتگویی انتخاب نشده</div>
+        <div style={{ marginTop: 8, opacity: 0.8 }}>از لیست سمت چپ یک گفتگو را انتخاب کن.</div>
       </div>
-    )}
-    <div className="message-text">
-      {message.content}
-      <span className="message-time">
-        {formatTime(message.timestamp || message.created_at)}
-      </span>
-      {message.sender_id === currentUserId && (
-        <span className={`read_receipt ${message.read_receipt ? 'read' : ''}`}>
-          ✓✓
-        </span>
-      )}
     </div>
-  </div>
-));
+  );
+}
 
-const MessageList = React.memo(({ messages, currentUserId }) => (
-  <div className="messages">
-    {Array.isArray(messages) && messages.length ? (
-      messages.map((m) => (
-        <MessageBubble key={m.id} message={m} currentUserId={currentUserId} />
-      ))
-    ) : (
-      <div className="no-messages">No messages yet</div>
-    )}
-  </div>
-));
-
-const TypingIndicator = ({ typing }) =>
-  typing && <div className="typing-indicator">User is typing...</div>;
-
-const ChatWindow = ({ roomId, endpoints, effectiveKind, accessToken: accessTokenProp }) => {
+export default function ChatWindow({
+  roomId,
+  endpoints,
+  effectiveKind,
+  accessToken: accessTokenProp,
+}) {
   const dispatch = useDispatch();
 
   const currentUserFromStore = useSelector(
     (s) => s.auth?.currentUser?.id || s.messages?.currentUserId || null,
   );
 
-  const [messages, setMessages] = useState([]);
-  const [messageInput, setMessageInput] = useState('');
-  const [error, setError] = useState(null);
-  const [typing, setTyping] = useState(null);
-  const [connectionStatus, setConnectionStatus] = useState('Connecting...');
-  const [currentUserId, setCurrentUserId] = useState(currentUserFromStore || null);
-
-  const seenMessageIdsRef = useRef(new Set());
-  const timeoutRef = useRef(null);
-  const notifyAudioRef = useRef(null);
-  const lastNotifyAtRef = useRef(0);
-  const lastTypingAtRef = useRef(0); // ✅ جلوگیری از spam تایپینگ در UI
-  const originalTitleRef = useRef(document.title);
-
   const rawToken = accessTokenProp || '';
   const accessToken = stripBearer(rawToken);
 
-  /* -------------------- Desktop notify & title -------------------- */
+  const [messages, setMessages] = useState([]);
+  const [messageInput, setMessageInput] = useState('');
+  const [uiError, setUiError] = useState(null);
+  const [typingUserId, setTypingUserId] = useState(null);
+  const [currentUserId, setCurrentUserId] = useState(currentUserFromStore || null);
 
+  const seenMessageIdsRef = useRef(new Set());
+  const typingTimeoutRef = useRef(null);
+
+  const lastNotifyAtRef = useRef(0);
+  const lastTypingUiAtRef = useRef(0);
+  const notifyAudioRef = useRef(null);
+
+  const inputRef = useRef(null);
+
+  const { bump: bumpTitle } = useDocTitleBadge();
+
+  const { containerRef, notifyNewMessage, scrollToBottom, showNewBadge, newCount } =
+    useAutoScroll({ enabled: true, bottomThresholdPx: 140 });
+
+  /* -------------------- ✅ HARD RESET when room changes -------------------- */
+  useEffect(() => {
+    // وقتی روم عوض شد: هیچ چیزی از روم قبلی نباید باقی بماند
+    setMessages([]);
+    setMessageInput('');
+    setUiError(null);
+    setTypingUserId(null);
+
+    seenMessageIdsRef.current = new Set();
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = null;
+
+    // این باعث میشه badge های "new messages" هم از اول شروع بشن
+    setTimeout(() => scrollToBottom('auto'), 0);
+
+    log(2, ROOM_TAG, 'room changed -> cleared local chat state', { roomId });
+  }, [roomId, scrollToBottom]);
+
+  /* -------------------- notifications init -------------------- */
   useEffect(() => {
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission().catch(() => {});
@@ -101,34 +105,17 @@ const ChatWindow = ({ roomId, endpoints, effectiveKind, accessToken: accessToken
     notifyAudioRef.current = new Audio('/sounds/incoming.mp3');
   }, []);
 
-  const showDesktopNotification = useCallback((title, body, onClick) => {
-    if (Notification?.permission === 'granted' && document.hidden) {
-      const n = new Notification(title, { body });
-      if (onClick) {
-        n.onclick = (e) => {
-          e.preventDefault();
-          window.focus();
-          onClick();
-          n.close();
-        };
-      }
-    }
+  const showDesktopNotification = useCallback((title, body) => {
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    if (!document.hidden) return;
+
+    try {
+      new Notification(title, { body });
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    const onVisChange = () => {
-      if (!document.hidden) document.title = originalTitleRef.current;
-    };
-    document.addEventListener('visibilitychange', onVisChange);
-    return () => document.removeEventListener('visibilitychange', onVisChange);
-  }, []);
-
-  const bumpTitle = (count = 1) => {
-    document.title = `( ${count} ) ${originalTitleRef.current}`;
-  };
-
-  /* -------------------- currentUserId از Redux/JWT/ /me -------------------- */
-
+  /* -------------------- currentUserId from store/JWT//me -------------------- */
   useEffect(() => {
     if (currentUserFromStore) {
       setCurrentUserId(currentUserFromStore);
@@ -141,10 +128,10 @@ const ChatWindow = ({ roomId, endpoints, effectiveKind, accessToken: accessToken
         const id = dec?.user_id ?? dec?.sub ?? null;
         if (id) {
           setCurrentUserId(Number(id));
-          dlog(ROOM_DEBUG, 'currentUserId from JWT', Number(id));
+          log(2, ROOM_TAG, 'currentUserId from JWT', Number(id));
         }
       } catch (e) {
-        dwarn(ROOM_DEBUG, 'JWT decode skipped:', e?.message);
+        warn(ROOM_TAG, 'JWT decode skipped:', e?.message);
       }
     }
   }, [currentUserFromStore, accessToken]);
@@ -154,20 +141,22 @@ const ChatWindow = ({ roomId, endpoints, effectiveKind, accessToken: accessToken
     if (!needFetchMe) return;
 
     let abort = false;
+
     (async () => {
       try {
-        dlog(ROOM_DEBUG, 'fetching /me', endpoints.me);
+        log(2, ROOM_TAG, 'fetching /me', endpoints.me);
         const resp = await fetch(endpoints.me, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (!resp.ok) throw new Error(`GET /me ${resp.status}`);
         const me = await resp.json().catch(() => ({}));
+
         if (!abort && me?.id) {
           setCurrentUserId(Number(me.id));
-          dlog(ROOM_DEBUG, 'currentUserId from /me', Number(me.id));
+          log(2, ROOM_TAG, 'currentUserId from /me', Number(me.id));
         }
       } catch (e) {
-        dwarn(ROOM_DEBUG, '[me] fallback failed:', e?.message);
+        warn(ROOM_TAG, '[me] failed:', e?.message);
       }
     })();
 
@@ -176,8 +165,7 @@ const ChatWindow = ({ roomId, endpoints, effectiveKind, accessToken: accessToken
     };
   }, [currentUserId, accessToken, endpoints]);
 
-  /* -------------------- گرفتن پیام‌ها (HTTP فقط برای history) -------------------- */
-
+  /* -------------------- history fetch (HTTP) -------------------- */
   const fetchConfig = useMemo(
     () => (roomId ? { headers: { Authorization: `Bearer ${accessToken}` } } : {}),
     [roomId, accessToken],
@@ -189,96 +177,100 @@ const ChatWindow = ({ roomId, endpoints, effectiveKind, accessToken: accessToken
   );
 
   useEffect(() => {
+    if (!roomId) return;
     if (!fetchedMessages) return;
 
     let arr = [];
     if (Array.isArray(fetchedMessages)) arr = fetchedMessages;
-    else if (Array.isArray(fetchedMessages.messages)) arr = fetchedMessages.messages;
-    else if (Array.isArray(fetchedMessages.data)) arr = fetchedMessages.data;
+    else if (Array.isArray(fetchedMessages?.messages)) arr = fetchedMessages.messages;
+    else if (Array.isArray(fetchedMessages?.data)) arr = fetchedMessages.data;
 
-    // ✅ history رو بی‌سروصدا ست می‌کنیم + seen را پر می‌کنیم (اختیاری)
     const seen = new Set();
     for (const m of arr) if (m?.id) seen.add(m.id);
     seenMessageIdsRef.current = seen;
 
     setMessages(arr);
-    dlog(ROOM_DEBUG, 'history loaded', { count: arr.length });
-  }, [fetchedMessages]);
+
+    setTimeout(() => scrollToBottom('auto'), 0);
+    log(2, ROOM_TAG, 'history loaded', { roomId, count: arr.length });
+  }, [roomId, fetchedMessages, scrollToBottom]);
 
   useEffect(() => {
     if (!fetchError) return;
-    derr(ROOM_DEBUG, 'Error fetching messages:', fetchError);
-    setError('Error fetching messages. Please try again.');
+    err(ROOM_TAG, 'Error fetching messages:', fetchError);
+    setUiError('Error fetching messages. Please try again.');
   }, [fetchError]);
 
-  /* -------------------- handler مشترک برای تمام packetها -------------------- */
-
+  /* -------------------- WS notification handler -------------------- */
   const handleNotification = useCallback(
     (packet) => {
-      if (!packet || !packet.type) {
-        dwarn(ROOM_DEBUG, 'packet without type ignored', packet);
+      if (!packet || !packet.type) return;
+
+      if (packet.type === 'message') {
+        const m = packet.message;
+
+        if (m?.id && !seenMessageIdsRef.current.has(m.id)) {
+          seenMessageIdsRef.current.add(m.id);
+
+          setMessages((prev) => [...prev, m]);
+          notifyNewMessage();
+        }
+
+        dispatch(updateMessages(packet));
+
+        const senderId = m?.sender_id;
+        const mine = Number(currentUserId);
+
+        if (senderId && mine && Number(senderId) !== mine) {
+          const now = Date.now();
+          if (now - lastNotifyAtRef.current > 1200) {
+            lastNotifyAtRef.current = now;
+
+            toast?.info(m?.content ?? 'پیام جدید');
+            notifyAudioRef.current?.play().catch(() => {});
+            showDesktopNotification(m?.sender_name || 'پیام جدید', m?.content || '');
+
+            bumpTitle(1);
+          }
+        }
+
         return;
       }
 
-      switch (packet.type) {
-        case 'message': {
-          const m = packet.message;
+      if (packet.type === 'typing_indicator') {
+        const uid = packet.user_id;
+        if (!uid) return;
 
-          if (m?.id && !seenMessageIdsRef.current.has(m.id)) {
-            seenMessageIdsRef.current.add(m.id);
-            setMessages((prev) => [...prev, m]);
-          }
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
-          dispatch(updateMessages(packet));
+        setTypingUserId(uid);
 
-          // نوتیف فقط وقتی از دیگری باشد
-          if (m?.sender_id && currentUserId && m.sender_id !== currentUserId) {
-            try {
-              const now = Date.now();
-              if (now - lastNotifyAtRef.current > 1200) {
-                lastNotifyAtRef.current = now;
-                toast?.info(m.content ?? 'پیام جدید');
-                notifyAudioRef.current?.play().catch(() => {});
-                showDesktopNotification(m.sender_name || 'پیام جدید', m.content || '', () => {});
-                if (document.hidden) bumpTitle();
-              }
-            } catch (e) {
-              dwarn(ROOM_DEBUG, 'notification error', e);
-            }
-          }
-          break;
-        }
+        typingTimeoutRef.current = setTimeout(() => {
+          dispatch(resetTypingIndicator(uid));
+          setTypingUserId(null);
+          typingTimeoutRef.current = null;
+        }, 5000);
 
-        case 'typing_indicator': {
-          if (packet.user_id) {
-            if (timeoutRef.current) clearTimeout(timeoutRef.current);
-            setTyping(packet.user_id);
-            timeoutRef.current = setTimeout(() => {
-              dispatch(resetTypingIndicator(packet.user_id));
-              setTyping(null);
-            }, 5000);
-          }
-          break;
-        }
+        return;
+      }
 
-        case 'message_received': {
-          setMessages((prev) =>
-            prev.map((x) =>
-              x.id === packet.message ? { ...x, read_receipt: true } : x,
-            ),
-          );
-          break;
-        }
-
-        default:
-          dlog(ROOM_DEBUG, 'Unknown WS type:', packet.type);
+      if (packet.type === 'message_received') {
+        setMessages((prev) =>
+          prev.map((x) => (x?.id === packet.message ? { ...x, read_receipt: true } : x)),
+        );
       }
     },
-    [dispatch, currentUserId, showDesktopNotification],
+    [dispatch, currentUserId, notifyNewMessage, showDesktopNotification, bumpTitle],
   );
 
-  /* -------------------- ترنسپورت یکپارچه (Django + Reverb) -------------------- */
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    };
+  }, [roomId]);
 
+  /* -------------------- transport -------------------- */
   const { status: transportStatus, connectionLabel, sendMessage, sendTyping } =
     useRoomTransport({
       backendKind: effectiveKind,
@@ -289,58 +281,55 @@ const ChatWindow = ({ roomId, endpoints, effectiveKind, accessToken: accessToken
     });
 
   useEffect(() => {
-    setConnectionStatus(connectionLabel || '—');
-    dlog(ROOM_DEBUG, 'transport', { status: transportStatus, label: connectionLabel });
-  }, [connectionLabel, transportStatus]);
+    if (transportStatus === 'connected') {
+      setTimeout(() => inputRef.current?.focus?.(), 0);
+    }
+  }, [transportStatus, roomId]);
 
-  /* -------------------- ارسال پیام (فقط WebSocket) -------------------- */
+  /* -------------------- send message -------------------- */
+  const readyToSend =
+    Boolean(roomId) &&
+    Boolean(accessToken) &&
+    Number.isFinite(Number(currentUserId)) &&
+    transportStatus === 'connected';
 
   const handleSendMessage = useCallback(
     async (e) => {
       e.preventDefault();
-      const text = messageInput.trim();
-      dlog(ROOM_DEBUG, 'SUBMIT', {
-  roomId,
-  currentUserId,
-  transportStatus,
-  textLen: messageInput.trim().length,
-});
 
-if (!currentUserId) {
-  setError('User not ready yet (loading /me). Try again in 1 second.');
-  return;
-}
+      const text = String(messageInput || '').trim();
+      setUiError(null);
+
+      log(2, ROOM_TAG, 'SUBMIT', { roomId, currentUserId, transportStatus, textLen: text.length });
+
+      if (!currentUserId) {
+        setUiError('User not ready yet (loading /me). Try again in 1 second.');
+        return;
+      }
 
       if (!text) {
-        setError('Message cannot be empty');
+        setUiError('Message cannot be empty');
+        return;
+      }
+
+      if (transportStatus !== 'connected') {
+        setUiError('WebSocket is not connected yet.');
         return;
       }
 
       try {
-        if (
-          transportStatus === 'off' ||
-          transportStatus === 'closed' ||
-          transportStatus === 'disconnected' ||
-          transportStatus === 'error'
-        ) {
-          setError('WebSocket connection is not open. Please try again later.');
-          return;
-        }
-
         await sendMessage(text);
-
         setMessageInput('');
-        setError(null);
-      } catch (err) {
-        derr(ROOM_DEBUG, 'Error sending message (WS):', err);
-        setError(err?.message || 'Failed to send message');
+        setTimeout(() => scrollToBottom('smooth'), 0);
+      } catch (e2) {
+        err(ROOM_TAG, 'sendMessage failed', e2);
+        setUiError(e2?.message || 'Failed to send message');
       }
     },
-    [messageInput, sendMessage, transportStatus],
+    [messageInput, sendMessage, transportStatus, roomId, currentUserId, scrollToBottom],
   );
 
-  /* -------------------- تایپینگ (کم‌لاگ + throttle UI) -------------------- */
-
+  /* -------------------- typing (UI throttle) -------------------- */
   const handleInputChange = useCallback(
     (e) => {
       const val = e.target.value;
@@ -349,72 +338,89 @@ if (!currentUserId) {
       if (!currentUserId) return;
       if (!val.trim()) return;
 
-      // ✅ UI-side throttle: هر 800ms یک بار تلاش کنیم
       const now = Date.now();
-      if (now - lastTypingAtRef.current < 800) return;
-      lastTypingAtRef.current = now;
+      if (now - lastTypingUiAtRef.current < 800) return;
+      lastTypingUiAtRef.current = now;
 
-      // sendTyping خودش throttle دارد (تو useRoomTransport)
-      const sent = sendTyping(currentUserId);
-      if (sent) dlog(ROOM_DEBUG, 'typing sent', { roomId, userId: currentUserId });
+      sendTyping(currentUserId);
     },
-    [currentUserId, sendTyping, roomId],
+    [currentUserId, sendTyping],
   );
 
+  /* -------------------- render -------------------- */
   if (!roomId) {
-    return <div className="no-chat-selected">Select a chat to start messaging</div>;
+    return <SelectRoomPlaceholder />;
   }
-const readyToSend =
-  Boolean(roomId) &&
-  Boolean(accessToken) &&
-  Number.isFinite(Number(currentUserId)) &&
-  transportStatus === 'connected';
+if (!currentUserId) return <div>Loading user...</div>;
 
   return (
-    <div className="chat-window">
+    <div className="chat-window chat-window--full">
       {loading && (
         <div className="loading-spinner">
           <Spinner animation="border" />
         </div>
       )}
-      {error && <Alert variant="danger">{error}</Alert>}
+
+      {uiError && <Alert variant="danger">{uiError}</Alert>}
 
       <div className="connection-status">
-        {connectionStatus}{' '}
-        {DEBUG && (
-          <span style={{ opacity: 0.6, fontSize: 11 }}>
-            ({ROOM_DEBUG} roomId={roomId}, backend={String(effectiveKind)})
+        {connectionLabel || '—'}
+        {DEBUG_LEVEL > 0 && (
+          <span style={{ opacity: 0.6, fontSize: 11, marginLeft: 8 }}>
+            {ROOM_TAG} roomId={roomId} backend={String(effectiveKind)} status={transportStatus}
           </span>
         )}
       </div>
 
-      <MessageList messages={messages} currentUserId={currentUserId} />
-      <TypingIndicator typing={typing} />
+      <div className="chat-window__body">
+        <div className="chat-window__messagesWrap">
+          {/* ✅ DEBUG PANEL */}
+{import.meta.env.DEV && (
+  <div style={{ padding: 8, fontSize: 12, opacity: 0.85 }}>
+    <div><b>roomId:</b> {roomId}</div>
+    <div><b>currentUserId:</b> {String(currentUserId)}</div>
+    <div><b>messages.length:</b> {messages?.length ?? 0}</div>
+    <div><b>sample:</b> {messages?.[0] ? JSON.stringify(messages[0]).slice(0, 220) + '…' : '—'}</div>
+  </div>
+)}
 
-      <Form onSubmit={handleSendMessage} className="chat-input-form">
-  <Form.Group controlId="messageInput">
-    <Form.Control
-      type="text"
-      placeholder={currentUserId ? 'Type a message...' : 'Loading user…'}
-      value={messageInput}
-      onChange={handleInputChange}
-      disabled={!currentUserId || transportStatus !== 'connected'}
-    />
-  </Form.Group>
-
-  <Button
-    type="submit"
-    variant="primary"
-    disabled={!readyToSend || !messageInput.trim()}
-  >
-    Send
-  </Button>
-</Form>
+          <ChatMessagesList
+  messages={messages}
+  currentUserId={currentUserId}
+  containerRef={containerRef}
+/>
 
 
+          {showNewBadge && (
+            <button
+              type="button"
+              onClick={() => scrollToBottom('smooth')}
+              className="chat-window__newBadge"
+            >
+              New messages ({newCount})
+            </button>
+          )}
+        </div>
 
+        <TypingIndicator typing={typingUserId} />
+
+        <Form onSubmit={handleSendMessage} className="chat-input-form">
+          <Form.Group controlId="messageInput">
+            <Form.Control
+              ref={inputRef}
+              type="text"
+              placeholder={currentUserId ? 'Type a message...' : 'Loading user…'}
+              value={messageInput}
+              onChange={handleInputChange}
+              disabled={!currentUserId || transportStatus !== 'connected'}
+            />
+          </Form.Group>
+
+          <Button type="submit" variant="primary" disabled={!readyToSend || !messageInput.trim()}>
+            Send
+          </Button>
+        </Form>
+      </div>
     </div>
   );
-};
-
-export default ChatWindow;
+}

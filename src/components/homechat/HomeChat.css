@@ -587,7 +587,7 @@ html, body, #root { height: 100%; }
   .typing-indicator .dot { animation: none; }
 }
 /* =========================================================
-   Extra: BackendPicker (current markup) + MessageList polish
+   Extra: BackendPicker (current markup) + ConversationList polish
    ========================================================= */
 
 /* -------- BackendPicker (your current markup) -------- */
@@ -658,7 +658,7 @@ html, body, #root { height: 100%; }
   color: #fff;
 }
 
-/* -------- MessageList (messages area) polish -------- */
+/* -------- ConversationList (messages area) polish -------- */
 .messages[role="list"] {
   /* already styled earlier; this just strengthens spacing */
   display: flex;
@@ -732,7 +732,7 @@ html, body, #root { height: 100%; }
 
 
 /* wrapper for avatar (recommended) */
-/* Add to src/components/MessageList.css (or your global chat css) */
+/* Add to src/components/ConversationList.css (or your global chat css) */
 .avatar-wrap {
   position: relative;
   display: inline-flex;
@@ -750,3 +750,138 @@ html, body, #root { height: 100%; }
     0 0 14px rgba(52, 211, 153, 0.45);
   pointer-events: none;
 }
+/* ===========================
+   FIX: Send button not visible
+   =========================== */
+
+/* override old grid layout */
+.chat-input-form{
+  display: flex !important;           /* ✅ instead of grid */
+  align-items: center;
+  gap: 10px;
+
+  flex: 0 0 auto;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.18);
+  backdrop-filter: blur(10px);
+}
+
+/* Form.Group is a div -> must flex */
+.chat-input-form > .form-group,
+.chat-input-form > .mb-3 {
+  flex: 1 1 auto !important;
+  margin: 0 !important;
+}
+
+/* input fills remaining width */
+.chat-input-form .form-control{
+  width: 100% !important;
+  min-width: 0;                       /* ✅ prevents overflow pushing button out */
+}
+
+/* button must not shrink */
+.chat-input-form .btn{
+  flex: 0 0 auto !important;
+  white-space: nowrap;
+}
+
+/* if anything overlaps, force visibility */
+.chat-input-form{
+  position: relative;
+  z-index: 2;
+}
+.chat-window--full{
+  height: calc(100dvh - 180px); /* همون قبلی */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chat-window__body{
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+
+/* Ensure bubbles are visible */
+.message-bubble,
+.message-text {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* Ensure text is readable */
+.message-text,
+.message-text * {
+  color: var(--text) !important;
+}
+
+/* Avoid layout collapsing */
+.chat-window,
+.chat-window__body,
+.messages {
+  min-height: 0 !important;
+}
+
+
+.messages {
+  overflow-y: auto !important;
+}
+.messages{
+  padding-bottom: 80px; /* ✅ space for input */
+}
+.chat-window{
+  min-height: 0;
+}
+/* === Chat layout fix (must be) === */
+.chat-window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;             /* اگر parent ارتفاع مشخص دارد */
+  min-height: 0;            /* خیلی مهم برای flex children */
+}
+
+.chat-window__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* این wrapper باید اجازه اسکرول بده */
+.chat-window__messagesWrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;           /* ✅ auto نه hidden */
+}
+
+/* لیست پیام‌ها */
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow: visible;        /* داخل wrap اسکرول می‌کنیم */
+}
+
+/* خود پیام */
+.message-bubble {
+  max-width: 75%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  word-break: break-word;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.message-text,
+.message-text * {
+  color: var(--text, #111) !important;
+}
+
+/* اگر کلاس‌های چپ/راست داری */
+.message-bubble--me { margin-left: auto; }
+.message-bubble--other { margin-right: auto; }

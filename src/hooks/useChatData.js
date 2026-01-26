@@ -1,5 +1,5 @@
 // src/hooks/useChatData.js
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import useFetch from '@/hooks/useFetch';
 import { useDispatch } from 'react-redux';
 import {
@@ -10,6 +10,8 @@ import {
 } from '@/actions/messageActions';
 import { toErrorMessage } from '@/utils/errors';
 
+const toArray = (x) => (Array.isArray(x) ? x : Array.isArray(x?.data) ? x.data : Array.isArray(x?.results) ? x.results : []);
+
 export default function useChatData({ endpoints, accessToken }) {
   const dispatch = useDispatch();
 
@@ -18,7 +20,6 @@ export default function useChatData({ endpoints, accessToken }) {
     [accessToken],
   );
 
-  // 🔹 لیست DM / partners (legacy + API جدید)
   const {
     data: convos,
     loading: loadingConvos,
@@ -26,7 +27,6 @@ export default function useChatData({ endpoints, accessToken }) {
     retry: retryConvos,
   } = useFetch(endpoints.convos, fetchConfig);
 
-  // 🔹 لیست rooms (برای گروه‌ها یا بک‌اندهای قدیمی)
   const {
     data: roomsRaw,
     loading: loadingRooms,
@@ -34,58 +34,60 @@ export default function useChatData({ endpoints, accessToken }) {
     retry: retryRooms,
   } = useFetch(endpoints.rooms, fetchConfig);
 
-  // --- نرمال‌سازی خروجی conversations ---
+  // ✅ این ref کمک می‌کنه وقتی fetch موقتاً null شد، لیست‌ها پاک نشن
+  const lastNonEmptyRef = useRef({ dms: null, groups: null });
+
+  // --- normalize convos ---
   const dmPartners = useMemo(() => {
-    if (!convos) return [];
-
-    // API جدید: { partners: [...] }
+    if (!convos) return null; // 👈 مهم: null یعنی هنوز “جواب” نداریم، پس پاک نکن
     if (Array.isArray(convos.partners)) return convos.partners;
-
-    // بک‌اندهایی که مستقیم آرایه برمی‌گردونن
     if (Array.isArray(convos)) return convos;
-
-    // فرم‌های دیگه: { results: [...] } یا { data: [...] }
     if (Array.isArray(convos.results)) return convos.results;
     if (Array.isArray(convos.data)) return convos.data;
-
     return [];
   }, [convos]);
 
   const groupFromConvos = useMemo(() => {
-    if (!convos) return [];
+    if (!convos) return null; // 👈 مهم
     if (Array.isArray(convos.groups)) return convos.groups;
     return [];
   }, [convos]);
 
-  // --- نرمال‌سازی rooms ---
+  // --- normalize rooms ---
   const normRooms = useMemo(() => {
-    if (Array.isArray(roomsRaw)) return roomsRaw;
-    if (Array.isArray(roomsRaw?.results)) return roomsRaw.results;
-    if (Array.isArray(roomsRaw?.data)) return roomsRaw.data;
-    return [];
+    if (!roomsRaw) return null; // 👈 مهم
+    return toArray(roomsRaw);
   }, [roomsRaw]);
 
-  // --- side effect: sync با Redux ---
   useEffect(() => {
-    // ✅ DM ها (لیست گفتگوهای فردی)
-    if (dmPartners) {
+    // ✅ DM ها: فقط وقتی جواب داریم dispatch کن
+    if (dmPartners !== null) {
+      if (Array.isArray(dmPartners) && dmPartners.length) lastNonEmptyRef.current.dms = dmPartners;
       dispatch(setIndividualMessages(dmPartners));
+    } else if (lastNonEmptyRef.current.dms) {
+      // optional: هیچ کاری نکن یا می‌تونی همین رو نگه داری
+      // dispatch(setIndividualMessages(lastNonEmptyRef.current.dms));
     }
 
-    // ✅ گروه‌ها:
-    // اگر API جدید groups دارد، از آن استفاده کن؛
-    // وگرنه fallback به rooms قدیمی
-    const groupsSource =
-      groupFromConvos && groupFromConvos.length > 0
-        ? groupFromConvos
-        : normRooms;
+    // ✅ گروه‌ها: اولویت با convos.groups، fallback به rooms
+    let groupsSource = null;
 
-    dispatch(setGroupMessages(groupsSource));
+    if (groupFromConvos !== null && Array.isArray(groupFromConvos) && groupFromConvos.length) {
+      groupsSource = groupFromConvos;
+    } else if (normRooms !== null) {
+      groupsSource = normRooms;
+    }
 
-    // ✅ وضعیت loading کلی
-    dispatch(setLoading(loadingConvos || loadingRooms));
+    if (groupsSource !== null) {
+      if (Array.isArray(groupsSource) && groupsSource.length) lastNonEmptyRef.current.groups = groupsSource;
+      dispatch(setGroupMessages(groupsSource));
+    } else if (lastNonEmptyRef.current.groups) {
+      // optional نگه داشتن قبلی
+      // dispatch(setGroupMessages(lastNonEmptyRef.current.groups));
+    }
 
-    // ✅ وضعیت error کلی
+    dispatch(setLoading(Boolean(loadingConvos || loadingRooms)));
+
     const err = errorConvos || errorRooms;
     if (err) {
       dispatch(
@@ -111,7 +113,7 @@ export default function useChatData({ endpoints, accessToken }) {
 
   return {
     retryRooms,
-    retryUsers: undefined, // برای سازگاری با HomeChat که retryRoomsUsers?.() صدا می‌زند
+    retryUsers: undefined,
     retryConvos,
   };
 }

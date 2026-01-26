@@ -6,26 +6,31 @@ import {
   createSelector,
 } from '@reduxjs/toolkit';
 
+const EMPTY_ARR = [];
+const EMPTY_OBJ = {};
+
 // ✅ آداپتر پیام‌ها (entity-based)
 const messagesAdapter = createEntityAdapter({
   selectId: (msg) => msg.id,
   sortComparer: (a, b) => {
-    // بر اساس زمان ایجاد مرتب می‌کنیم
     const ta = a.created_at || a.createdAt || '';
     const tb = b.created_at || b.createdAt || '';
-    // اگر ISO string باشد، localeCompare جواب می‌دهد
-    return ta.localeCompare(tb);
+    return String(ta).localeCompare(String(tb));
   },
 });
 
-// ✅ state اولیه + فیلدهای اضافه‌ی UI
+// ✅ state اولیه + فیلدهای اضافه‌ی UI + roomsRaw
 const initialState = messagesAdapter.getInitialState({
   status: 'idle',
   error: null,
   selectedRoomId: null,
+
+  // ✅ NEW: لیست خام rooms از API (برای ساخت DM/Group list)
+  roomsRaw: EMPTY_ARR,
+  roomsStatus: 'idle',
+  roomsError: null,
 });
 
-// ✅ اسلایس
 const messageEntitySlice = createSlice({
   name: 'messagesEntity',
   initialState,
@@ -35,7 +40,26 @@ const messageEntitySlice = createSlice({
       state.selectedRoomId = action.payload ?? null;
     },
 
-    // اضافه کردن پیام لوکال (optimistic) با prepare + nanoid
+    // ✅ NEW: set roomsRaw
+    setRoomsRaw(state, action) {
+      const arr = Array.isArray(action.payload) ? action.payload : EMPTY_ARR;
+      state.roomsRaw = arr;
+      state.roomsStatus = 'succeeded';
+      state.roomsError = null;
+    },
+    clearRoomsRaw(state) {
+      state.roomsRaw = EMPTY_ARR;
+      state.roomsStatus = 'idle';
+      state.roomsError = null;
+    },
+    setRoomsStatus(state, action) {
+      state.roomsStatus = action.payload || 'idle';
+    },
+    setRoomsError(state, action) {
+      state.roomsError = action.payload || null;
+    },
+
+    // اضافه کردن پیام لوکال (optimistic)
     addLocalMessage: {
       reducer(state, action) {
         messagesAdapter.addOne(state, action.payload);
@@ -48,33 +72,30 @@ const messageEntitySlice = createSlice({
             userId,
             content,
             created_at: new Date().toISOString(),
-            status: 'local', // بعداً سرور تأیید کرد → می‌تونی 'sent' کنی
+            status: 'local',
           },
         };
       },
     },
 
-    // upsert مجموعه‌ای از پیام‌ها (مثلاً برای یک روم از API گرفتی)
     upsertMessages(state, action) {
-      const list = action.payload || [];
-      // اگر payload فقط پیام‌های یک روم خاص است، می‌تونی قبلش clearRoomMessages را صدا بزنی
+      const list = Array.isArray(action.payload) ? action.payload : EMPTY_ARR;
       messagesAdapter.upsertMany(state, list);
     },
 
-    // جایگزین کردن کل پیام‌ها (مثلاً وقتی از server تمام state روم را می‌گیری)
     setMessages(state, action) {
-      const list = action.payload || [];
+      const list = Array.isArray(action.payload) ? action.payload : EMPTY_ARR;
       messagesAdapter.setAll(state, list);
     },
 
-    // حذف یک پیام
     removeMessage(state, action) {
       messagesAdapter.removeOne(state, action.payload);
     },
 
-    // پاک کردن پیام‌های یک روم خاص (نسخه بهینه‌تر با removeMany)
     clearRoomMessages(state, action) {
       const roomId = action.payload;
+      if (!roomId) return;
+
       const idsToRemove = Object.values(state.entities)
         .filter((m) => m && m.roomId === roomId)
         .map((m) => m.id);
@@ -82,7 +103,6 @@ const messageEntitySlice = createSlice({
       messagesAdapter.removeMany(state, idsToRemove);
     },
 
-    // تنظیم وضعیت/خطا (آموزشی)
     setMessagesStatus(state, action) {
       state.status = action.payload || 'idle';
     },
@@ -92,9 +112,13 @@ const messageEntitySlice = createSlice({
   },
 });
 
-// اکشن‌ها
 export const {
   setSelectedRoom,
+  setRoomsRaw,
+  clearRoomsRaw,
+  setRoomsStatus,
+  setRoomsError,
+
   addLocalMessage,
   upsertMessages,
   setMessages,
@@ -104,46 +128,38 @@ export const {
   setMessagesError,
 } = messageEntitySlice.actions;
 
-// reducer
 export default messageEntitySlice.reducer;
 
 // ========= Selectors پایه =========
 
-// state.root.messagesEntity
-const selectMessagesEntityState = (state) => state.messagesEntity;
+const selectMessagesEntityState = (state) => state.messagesEntity || EMPTY_OBJ;
 
-// ✅ selectors آماده‌ی adapter
 export const messagesEntitySelectors = messagesAdapter.getSelectors(
   selectMessagesEntityState,
 );
 
-// فیلدهای کمکی
-export const selectMessagesStatus = (state) =>
-  selectMessagesEntityState(state).status;
-export const selectMessagesError = (state) =>
-  selectMessagesEntityState(state).error;
-export const selectSelectedRoomId = (state) =>
-  selectMessagesEntityState(state).selectedRoomId;
+export const selectMessagesStatus = (state) => selectMessagesEntityState(state).status;
+export const selectMessagesError = (state) => selectMessagesEntityState(state).error;
+export const selectSelectedRoomId = (state) => selectMessagesEntityState(state).selectedRoomId;
 
-// ========= Selectors پیشرفته با createSelector =========
+// ✅ NEW: roomsRaw selectors
+export const selectRoomsRaw = (state) => selectMessagesEntityState(state).roomsRaw || EMPTY_ARR;
+export const selectRoomsStatus = (state) => selectMessagesEntityState(state).roomsStatus;
+export const selectRoomsError = (state) => selectMessagesEntityState(state).roomsError;
 
-// ✅ همه‌ی پیام‌های یک روم (memoized)
+// ========= Selectors پیشرفته =========
+
 export const selectMessagesByRoom = createSelector(
   [messagesEntitySelectors.selectAll, (_, roomId) => roomId],
-  (allMessages, roomId) =>
-    roomId ? allMessages.filter((m) => m.roomId === roomId) : [],
+  (allMessages, roomId) => (roomId ? allMessages.filter((m) => m.roomId === roomId) : EMPTY_ARR),
 );
 
-// ✅ پیام‌های روم فعلی
 export const selectCurrentRoomMessages = createSelector(
   [messagesEntitySelectors.selectAll, selectSelectedRoomId],
   (allMessages, selectedRoomId) =>
-    selectedRoomId
-      ? allMessages.filter((m) => m.roomId === selectedRoomId)
-      : [],
+    selectedRoomId ? allMessages.filter((m) => m.roomId === selectedRoomId) : EMPTY_ARR,
 );
 
-// ✅ آخرین پیام هر روم (برای سایدبار کانورسیشن)
 export const selectLastMessageByRoom = createSelector(
   [messagesEntitySelectors.selectAll],
   (allMessages) => {
@@ -155,17 +171,15 @@ export const selectLastMessageByRoom = createSelector(
       } else {
         const ta = msg.created_at || msg.createdAt || '';
         const tb = prev.created_at || prev.createdAt || '';
-        if (ta.localeCompare(tb) > 0) {
+        if (String(ta).localeCompare(String(tb)) > 0) {
           map.set(msg.roomId, msg);
         }
       }
     }
-    // خروجی به شکل object: { [roomId]: lastMessage }
     return Object.fromEntries(map.entries());
   },
 );
 
-// ✅ (آموزشی) تعداد پیام‌ها در روم فعلی
 export const selectCurrentRoomCount = createSelector(
   [selectCurrentRoomMessages],
   (msgs) => msgs.length,

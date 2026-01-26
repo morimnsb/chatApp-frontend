@@ -1,13 +1,56 @@
-// src/hooks/useRoomTransport.js
 import { useEffect, useState, useCallback, useRef } from 'react';
 
 const RT_DEBUG = '[RoomTransport]';
 const DEFAULT_TYPING_THROTTLE_MS = 800;
 
+const DEV = import.meta.env.DEV === true;
+const DEBUG_TRANSPORT = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+
+const safeKeys = (obj) => {
+  try {
+    return obj && typeof obj === 'object' ? Object.keys(obj) : [];
+  } catch {
+    return [];
+  }
+};
+
+const previewJson = (obj, max = 420) => {
+  try {
+    const s = JSON.stringify(obj);
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  } catch {
+    return String(obj);
+  }
+};
+
+const normalizeIncoming = (payload, roomId) => {
+  const raw = payload || {};
+  const rawMsg = raw?.message || raw;
+
+  const inferredRoom =
+    raw?.room_id ??
+    raw?.roomId ??
+    rawMsg?.room_id ??
+    rawMsg?.roomId ??
+    rawMsg?.chat_room_id ??
+    roomId ??
+    null;
+
+  return {
+    type: raw?.type || 'message',
+    room_id: inferredRoom,
+    roomId: inferredRoom,
+    message: rawMsg,
+    raw,
+  };
+};
+
+const stripBearer = (t) => String(t || '').replace(/^Bearer\s+/i, '').trim();
+
 export default function useRoomTransport({
   backendKind,
   roomId,
-  accessToken, // unused here (keep for future)
+  accessToken,
   handleNotification,
   currentUserId,
   typingThrottleMs = DEFAULT_TYPING_THROTTLE_MS,
@@ -24,22 +67,40 @@ export default function useRoomTransport({
 
   const subscribedRef = useRef(null);
 
+  const dbgCounterRef = useRef({
+    msg: 0,
+    typing: 0,
+    subscribe: 0,
+    cleanup: 0,
+  });
+
   const safeNotify = useCallback((packet) => {
     try {
+      if (DEBUG_TRANSPORT) {
+        console.log(RT_DEBUG, '[safeNotify] type=', packet?.type, 'roomId=', packet?.roomId);
+        console.log(RT_DEBUG, '[safeNotify] preview=', previewJson(packet));
+      }
       notifyRef.current?.(packet);
     } catch (e) {
       console.error(RT_DEBUG, 'handleNotification error', e);
     }
   }, []);
 
-  // ✅ your server logs show: private-chat.1 (wire)
-  // Echo private('chat.1')  => wire: private-chat.1
   const channelName = roomId ? `chat.${roomId}` : null;
 
-  /* ------------------------------------------------------------------
-   * 🔌 subscribe
-   * ------------------------------------------------------------------ */
   useEffect(() => {
+    if (DEBUG_TRANSPORT) {
+      console.log(RT_DEBUG, '[effect] start', {
+        backend,
+        roomId,
+        currentUserId,
+        channelName,
+        hasEcho: Boolean(window.__echo),
+        subscribedRef: subscribedRef.current,
+      });
+    }
+
+    // فقط Reverb
     if (backend !== 'reverb') {
       subscribedRef.current = null;
       setStatus('off');
@@ -47,6 +108,7 @@ export default function useRoomTransport({
       return;
     }
 
+    // صبر تا دیتا آماده شود
     if (!roomId) {
       subscribedRef.current = null;
       setStatus('idle');
@@ -80,9 +142,17 @@ export default function useRoomTransport({
 
     let ch;
     try {
+      dbgCounterRef.current.subscribe += 1;
+
       ch = echo.private(channelName);
       subscribedRef.current = channelName;
-      console.log(RT_DEBUG, '[Reverb] subscribed', channelName);
+
+      console.log(RT_DEBUG, '[Reverb] subscribed', {
+        channelName,
+        subscribeCount: dbgCounterRef.current.subscribe,
+        roomId,
+        currentUserId,
+      });
     } catch (e) {
       console.error(RT_DEBUG, '[Reverb] subscribe failed', e);
       setStatus('error-subscribe');
@@ -90,34 +160,40 @@ export default function useRoomTransport({
       return;
     }
 
-    // ✅ Server broadcast event for new messages
-    // Backend must broadcastAs('ChatMessageCreated') or event name 'ChatMessageCreated'
     const onMessage = (payload) => {
-      console.log(RT_DEBUG, '[Reverb] message event received', payload);
+      dbgCounterRef.current.msg += 1;
 
-      safeNotify(
-        payload?.type
-          ? payload
-          : {
-              type: 'message',
-              message: payload?.message || payload,
-            },
-      );
+      if (DEBUG_TRANSPORT) {
+        console.log(RT_DEBUG, '==============================');
+        console.log(RT_DEBUG, `[Reverb] RAW event #${dbgCounterRef.current.msg}`);
+        console.log(RT_DEBUG, '[RAW keys]=', safeKeys(payload));
+        console.log(RT_DEBUG, '[RAW preview]=', previewJson(payload));
+      }
+
+      const packet = normalizeIncoming(payload, roomId);
+      safeNotify(packet);
     };
 
-    // primary (your intended)
     ch.listen('.ChatMessageCreated', onMessage);
-
-    // fallback (if backend didn’t broadcastAs, sometimes Echo uses default event name)
-    // (safe: if it doesn't exist, nothing happens)
     ch.listen('ChatMessageCreated', onMessage);
 
-    // ✅ typing is PURE whisper (keep as-is)
     ch.listenForWhisper('typing', (payload) => {
+      dbgCounterRef.current.typing += 1;
+
+      if (DEBUG_TRANSPORT) {
+        console.log(RT_DEBUG, `[Reverb] whisper typing #${dbgCounterRef.current.typing}`, {
+          payloadKeys: safeKeys(payload),
+          payloadPreview: previewJson(payload),
+          roomId,
+        });
+      }
+
       safeNotify({
         type: 'typing_indicator',
         room_id: roomId,
+        roomId,
         user_id: payload?.user_id,
+        raw: payload,
       });
     });
 
@@ -125,74 +201,79 @@ export default function useRoomTransport({
     setConnectionLabel(`Reverb ${channelName}`);
 
     return () => {
-      console.log(RT_DEBUG, '[Reverb] cleanup leave', channelName);
+      dbgCounterRef.current.cleanup += 1;
+
+      console.log(RT_DEBUG, '[Reverb] cleanup leave', {
+        channelName,
+        cleanupCount: dbgCounterRef.current.cleanup,
+        subscribedWas: subscribedRef.current,
+      });
+
       try {
         ch?.stopListening('.ChatMessageCreated');
         ch?.stopListening('ChatMessageCreated');
       } catch {}
+
       try {
         echo.leave(channelName);
       } catch {}
+
       if (subscribedRef.current === channelName) subscribedRef.current = null;
+
       setStatus('idle');
       setConnectionLabel('Reverb: idle');
     };
   }, [backend, roomId, currentUserId, channelName, safeNotify]);
 
-  /* ------------------------------------------------------------------
-   * ✉️ sendMessage (client event -> backend should save + broadcast)
-   * ------------------------------------------------------------------ */
-  // inside useRoomTransport.js
+  const API = (import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000');
 
-const API =
-  import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
+  // ✅ FIXED: send to /api/chatMeetUp/messages/{roomId}
+  const sendMessage = useCallback(
+    async (text) => {
+      const trimmed = String(text || '').trim();
+      if (!trimmed) return;
 
-const stripBearer = (t) => String(t || '').replace(/^Bearer\s+/i, '').trim();
+      if (backend !== 'reverb') throw new Error(`Unsupported backend: ${backend}`);
+      if (!roomId) throw new Error('No roomId for sendMessage');
+      if (!currentUserId) throw new Error('No currentUserId for sendMessage');
 
-const sendMessage = useCallback(
-  async (text) => {
-    const trimmed = String(text || '').trim();
-    if (!trimmed) return;
+      const token = stripBearer(accessToken);
+      if (!token) throw new Error('No access token');
 
-    if (backend !== 'reverb') throw new Error(`Unsupported backend: ${backend}`);
-    if (!roomId) throw new Error('No roomId for sendMessage');
-    if (!currentUserId) throw new Error('No currentUserId for sendMessage');
+      const url = `${API}/api/chatMeetUp/messages/${roomId}`;
 
-    const token = stripBearer(accessToken);
-    if (!token) throw new Error('No access token');
+      if (DEBUG_TRANSPORT) {
+        console.log(RT_DEBUG, '[HTTP] sendMessage', { url, roomId, textLen: trimmed.length });
+      }
 
-    // ✅ این endpoint باید در Laravel وجود داشته باشد
-    const url = `${API}/api/chat/rooms/${roomId}/messages`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({ content: trimmed }),
+      });
+const textBody = await resp.text().catch(() => '');
+console.log(RT_DEBUG, '[HTTP] sendMessage resp', {
+  ok: resp.ok,
+  status: resp.status,
+  bodyPreview: textBody.slice(0, 200),
+});
+if (!resp.ok) {
+  throw new Error(`sendMessage failed ${resp.status}: ${textBody.slice(0, 200)}`);
+}
 
-    console.log(RT_DEBUG, '[HTTP] sendMessage', { url, roomId, textLen: trimmed.length });
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        throw new Error(`sendMessage failed ${resp.status}: ${body.slice(0, 200)}`);
+      }
+    },
+    [backend, roomId, currentUserId, accessToken, API],
+  );
 
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest',
-      },
-      body: JSON.stringify({ content: trimmed }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => '');
-      throw new Error(`sendMessage failed ${resp.status}: ${body.slice(0, 200)}`);
-    }
-
-    // اختیاری: اگر backend پیام را برگرداند
-    // const data = await resp.json().catch(() => null);
-    // console.log(RT_DEBUG, '[HTTP] sendMessage OK', data);
-  },
-  [backend, roomId, currentUserId, accessToken],
-);
-
-
-  /* ------------------------------------------------------------------
-   * ⌨️ sendTyping (PURE whisper, no DB, no backend listener)  ✅ DO NOT CHANGE
-   * ------------------------------------------------------------------ */
   const lastTypingSentAtRef = useRef(0);
 
   const sendTyping = useCallback(
@@ -208,6 +289,7 @@ const sendMessage = useCallback(
       if (!echo) return false;
 
       try {
+        if (DEBUG_TRANSPORT) console.log(RT_DEBUG, '[typing] whisper ->', { channelName, userId, at: now });
         echo.private(channelName).whisper('typing', { user_id: userId, at: now });
         return true;
       } catch (e) {
