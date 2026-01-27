@@ -175,3 +175,29 @@ Variables
   border: 2px solid rgba(255,255,255,0.18);
   box-shadow: none;
 }
+/* ConversationList.css */
+
+.message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0; /* مهم برای ellipsis */
+  flex: 1;
+}
+
+.last-inline {
+  opacity: 0.75;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}

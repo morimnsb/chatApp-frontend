@@ -1,4 +1,7 @@
+// chatApp-frontend\src\hooks\useRoomTransport.js
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useDispatch } from 'react-redux';
+import { updateMessages } from '@/actions/messageActions';
 
 const RT_DEBUG = '[RoomTransport]';
 const DEFAULT_TYPING_THROTTLE_MS = 800;
@@ -57,6 +60,8 @@ export default function useRoomTransport({
 }) {
   const backend = String(backendKind || '').toLowerCase();
 
+  const dispatch = useDispatch();
+
   const [status, setStatus] = useState('off');
   const [connectionLabel, setConnectionLabel] = useState('—');
 
@@ -100,7 +105,6 @@ export default function useRoomTransport({
       });
     }
 
-    // فقط Reverb
     if (backend !== 'reverb') {
       subscribedRef.current = null;
       setStatus('off');
@@ -108,7 +112,6 @@ export default function useRoomTransport({
       return;
     }
 
-    // صبر تا دیتا آماده شود
     if (!roomId) {
       subscribedRef.current = null;
       setStatus('idle');
@@ -171,6 +174,12 @@ export default function useRoomTransport({
       }
 
       const packet = normalizeIncoming(payload, roomId);
+console.log('[RT] dispatching UPDATE_MESSAGES', packet);
+
+      // ✅ 1) Redux update (ConversationList depends on this)
+      // dispatch(updateMessages(packet));
+
+      // ✅ 2) keep local notifications too (ChatWindow etc.)
       safeNotify(packet);
     };
 
@@ -188,13 +197,16 @@ export default function useRoomTransport({
         });
       }
 
-      safeNotify({
+      const packet = {
         type: 'typing_indicator',
         room_id: roomId,
         roomId,
         user_id: payload?.user_id,
         raw: payload,
-      });
+      };
+
+      // (اختیاری) اگر typing هم می‌خوای تو redux نگه داری، اینجا dispatch کن
+      safeNotify(packet);
     });
 
     setStatus('connected');
@@ -223,11 +235,10 @@ export default function useRoomTransport({
       setStatus('idle');
       setConnectionLabel('Reverb: idle');
     };
-  }, [backend, roomId, currentUserId, channelName, safeNotify]);
+  }, [backend, roomId, currentUserId, channelName, safeNotify, dispatch]);
 
   const API = (import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000');
 
-  // ✅ FIXED: send to /api/chatMeetUp/messages/{roomId}
   const sendMessage = useCallback(
     async (text) => {
       const trimmed = String(text || '').trim();
@@ -256,19 +267,16 @@ export default function useRoomTransport({
         },
         body: JSON.stringify({ content: trimmed }),
       });
-const textBody = await resp.text().catch(() => '');
-console.log(RT_DEBUG, '[HTTP] sendMessage resp', {
-  ok: resp.ok,
-  status: resp.status,
-  bodyPreview: textBody.slice(0, 200),
-});
-if (!resp.ok) {
-  throw new Error(`sendMessage failed ${resp.status}: ${textBody.slice(0, 200)}`);
-}
+
+      const textBody = await resp.text().catch(() => '');
+      console.log(RT_DEBUG, '[HTTP] sendMessage resp', {
+        ok: resp.ok,
+        status: resp.status,
+        bodyPreview: textBody.slice(0, 200),
+      });
 
       if (!resp.ok) {
-        const body = await resp.text().catch(() => '');
-        throw new Error(`sendMessage failed ${resp.status}: ${body.slice(0, 200)}`);
+        throw new Error(`sendMessage failed ${resp.status}: ${textBody.slice(0, 200)}`);
       }
     },
     [backend, roomId, currentUserId, accessToken, API],

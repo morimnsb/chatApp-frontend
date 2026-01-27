@@ -11,6 +11,16 @@ const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 const log = (...a) => DEBUG && console.log('[ConversationList]', ...a);
 
 const safeArr = (v) => (Array.isArray(v) ? v : []);
+const clip = (s, n = 38) => {
+  const t = String(s || '').trim();
+  if (!t) return '';
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+};
+const getLastText = (v) => {
+  if (!v) return '';
+  if (typeof v === 'string') return v;
+  return v?.content || v?.message || '';
+};
 
 export default function ConversationList({
   filteredIndividualMessages,
@@ -24,7 +34,6 @@ export default function ConversationList({
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
 
-  // ✅ همیشه هوک‌ها بالای کامپوننت و بدون شرط/loop
   const individualMessages = useMemo(
     () => safeArr(filteredIndividualMessages),
     [filteredIndividualMessages],
@@ -43,7 +52,7 @@ export default function ConversationList({
     [typingIndicators],
   );
 
-  // ✅ debug snapshot (بدون اسپم: فقط وقتی تغییر می‌کند)
+  // debug snapshot (only on change)
   const prevSig = useRef('');
   useEffect(() => {
     if (!DEBUG) return;
@@ -53,16 +62,18 @@ export default function ConversationList({
       dmCount: individualMessages.length,
       groupCount: groupMessages.length,
       dmSample: individualMessages.slice(0, 2).map((c) => ({
-        id: c?.id,
-        roomId: c?.roomId ?? c?.room_id ?? c?.chat_room_id,
-        partnerId: c?.partnerId ?? c?.partner_id ?? c?.user_id,
-        name: c?.first_name ?? c?.name ?? c?.email,
-        is_private: c?.is_private,
+        roomId: c?.roomId,
+        partnerId: c?.partnerId,
+        name: c?.first_name,
+        lastText: getLastText(c?.last_message_obj ?? c?.last_message) || c?.last_message_text || '',
+
+        lastAt: c?.last_message_at || null,
       })),
       groupSample: groupMessages.slice(0, 2).map((r) => ({
         id: r?.id,
         name: r?.name,
-        is_private: r?.is_private,
+        lastText: r?.last_message?.content || r?.last_message_text || '',
+        lastAt: r?.last_message_at || null,
       })),
     };
 
@@ -79,7 +90,6 @@ export default function ConversationList({
 
     try {
       const token = localStorage.getItem('access_token');
-
       const body = { name: 'ias: New Group Chat', is_group: true };
 
       const res = await axios.post('http://localhost:8000/api/rooms', body, {
@@ -99,7 +109,9 @@ export default function ConversationList({
       log('create group error', e);
       if (e?.response?.data) {
         setCreateError(
-          typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data),
+          typeof e.response.data === 'string'
+            ? e.response.data
+            : JSON.stringify(e.response.data),
         );
       } else {
         setCreateError('Server error while creating group');
@@ -118,25 +130,27 @@ export default function ConversationList({
 
       {individualMessages.length > 0 ? (
         individualMessages.map((convo) => {
-          const roomId = convo.roomId || convo.room_id || convo.chat_room_id || convo.id;
-          const userId = convo.partnerId || convo.partner_id || convo.user_id || convo.id;
+          const roomId = convo?.roomId ?? convo?.room_id ?? convo?.chat_room_id ?? convo?.id ?? null;
+          const userId = convo?.partnerId ?? convo?.partner_id ?? convo?.user_id ?? convo?.id ?? null;
 
-          const lastMsg = convo.last_message || convo.lastMessage || null;
+          const lastMsgObj = convo?.last_message_obj ?? convo?.last_message ?? null;
+const lastMsgText = getLastText(lastMsgObj) || convo?.last_message_text || '';
+
+
           const lastTime =
-            convo.last_message_at ||
-            convo.lastMessageAt ||
-            lastMsg?.timestamp ||
-            lastMsg?.created_at ||
-            null;
+  convo?.last_message_at ||
+  (typeof lastMsgObj === 'object' ? (lastMsgObj?.created_at || lastMsgObj?.timestamp) : null) ||
+  null;
+
 
           const displayName =
-            convo.first_name || convo.firstName || convo.name || convo.email || `User #${userId}`;
+            convo?.first_name || convo?.firstName || convo?.name || convo?.email || `User #${userId}`;
 
-          const avatar = convo.photo || convo.avatar || profilephoto1;
-          const isActive = selectedRoom === roomId;
+          const avatar = convo?.photo || convo?.avatar || profilephoto1;
+          const isActive = Number(selectedRoom) === Number(roomId);
 
-          const friendshipStatus = convo.friendship_status;
-          const friendshipId = convo.friendship_id;
+          const friendshipStatus = convo?.friendship_status;
+          const friendshipId = convo?.friendship_id;
 
           const isFriendReqIncoming = friendshipStatus === 'pending_incoming';
           const isFriendReqOutgoing = friendshipStatus === 'pending_outgoing';
@@ -144,11 +158,17 @@ export default function ConversationList({
           const isSelf =
             currentUser?.id && userId != null && Number(currentUser.id) === Number(userId);
 
+          // subtitle (line 2)
           let subtitle = '';
           if (isFriendReqIncoming) subtitle = 'sent you a friend request';
           else if (isFriendReqOutgoing) subtitle = 'Friend request sent';
-          else if (lastMsg) subtitle = lastMsg.content || '';
-          else subtitle = '';
+          else subtitle = clip(lastMsgText, 60);
+
+          // ✅ inline last message next to name
+          const inlinePreview =
+            !isFriendReqIncoming && !isFriendReqOutgoing
+              ? clip(lastMsgText, 28)
+              : '';
 
           return (
             <ListGroup.Item
@@ -169,7 +189,7 @@ export default function ConversationList({
                   <img
                     src={avatar}
                     alt={displayName}
-                    className={`profile-img ${convo.is_online ? 'is-online' : 'is-offline'}`}
+                    className={`profile-img ${convo?.is_online ? 'is-online' : 'is-offline'}`}
                   />
                 </div>
 
@@ -182,7 +202,15 @@ export default function ConversationList({
                           (you)
                         </span>
                       )}
+
+                      {/* ✅ inline last message */}
+                      {inlinePreview ? (
+                        <span className="text-muted" style={{ fontSize: 12, marginLeft: 8 }}>
+                          · {inlinePreview}
+                        </span>
+                      ) : null}
                     </span>
+
                     <span className="time-text">{lastTime ? formatTime(lastTime) : ''}</span>
                   </div>
 
@@ -219,9 +247,13 @@ export default function ConversationList({
                       </div>
                     ) : (
                       <>
-                        {renderTypingIndicator(userId) || <span className="subtext">{subtitle}</span>}
+                        {renderTypingIndicator(userId) ? (
+                          <span className="subtext">{renderTypingIndicator(userId)}</span>
+                        ) : (
+                          <span className="subtext">{subtitle}</span>
+                        )}
 
-                        {convo.unread_count > 0 && (
+                        {Number(convo?.unread_count || 0) > 0 && (
                           <span className="unread_count">{convo.unread_count}</span>
                         )}
                       </>
@@ -266,44 +298,69 @@ export default function ConversationList({
 
       {/* ----------------- GROUP LIST ----------------- */}
       {groupMessages.length > 0 ? (
-        groupMessages.map((room) => (
-          <ListGroup.Item
-            key={`group-${room.id}`}
-            className={`message-list-item p-0 ${selectedRoom === room.id ? 'active' : ''}`}
-          >
-            <div
-              role="button"
-              tabIndex={0}
-              className="message-row w-100"
-              style={{ cursor: 'pointer' }}
-              onClick={() => handleSelectChat(room.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSelectChat(room.id);
-              }}
+        groupMessages.map((room) => {
+          const roomId = room?.id ?? null;
+
+          const lastMsgObj = room?.last_message_obj ?? room?.last_message ?? null;
+const lastMsgText = getLastText(lastMsgObj) || room?.last_message_text || '';
+
+
+          const lastTime =
+            room?.last_message_at ||
+            lastMsgObj?.created_at ||
+            lastMsgObj?.timestamp ||
+            null;
+
+          const name = room?.name || room?.title || room?.room_name || `Room #${roomId}`;
+          const isActive = Number(selectedRoom) === Number(roomId);
+
+          const inlinePreview = clip(lastMsgText, 28);
+
+          return (
+            <ListGroup.Item
+              key={`group-${roomId}`}
+              className={`message-list-item p-0 ${isActive ? 'active' : ''}`}
             >
-              <div className="message-content">
-                <img src={room.photo || profilephoto1} alt={room.name} className="profile-img" />
-              </div>
-
-              <div className="message-body">
-                <div className="message-header">
-                  <span className="room-name">{room.name || `Room #${room.id}`}</span>
-                  <span className="time-text">
-                    {room.last_message
-                      ? formatTime(room.last_message.timestamp || room.last_message.created_at)
-                      : ''}
-                  </span>
+              <div
+                role="button"
+                tabIndex={0}
+                className="message-row w-100"
+                style={{ cursor: 'pointer' }}
+                onClick={() => handleSelectChat(roomId)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSelectChat(roomId);
+                }}
+              >
+                <div className="message-content">
+                  <img src={room?.photo || profilephoto1} alt={name} className="profile-img" />
                 </div>
 
-                <div className="message-details">
-                  <span className="subtext">{room.last_message?.content || ''}</span>
+                <div className="message-body">
+                  <div className="message-header">
+                    <span className="room-name">
+                      {name}
+                      {inlinePreview ? (
+                        <span className="text-muted" style={{ fontSize: 12, marginLeft: 8 }}>
+                          · {inlinePreview}
+                        </span>
+                      ) : null}
+                    </span>
 
-                  {room.unread_count > 0 && <span className="unread_count">{room.unread_count}</span>}
+                    <span className="time-text">{lastTime ? formatTime(lastTime) : ''}</span>
+                  </div>
+
+                  <div className="message-details">
+                    <span className="subtext">{clip(lastMsgText, 60)}</span>
+
+                    {Number(room?.unread_count || 0) > 0 && (
+                      <span className="unread_count">{room.unread_count}</span>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          </ListGroup.Item>
-        ))
+            </ListGroup.Item>
+          );
+        })
       ) : (
         <ListGroup.Item className="no-messages">No group messages available</ListGroup.Item>
       )}

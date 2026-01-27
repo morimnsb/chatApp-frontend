@@ -1,4 +1,4 @@
-// chatApp-frontend\src\reducers\messages\handlers.js
+// chatApp-frontend/src/reducers/messages/handlers.js
 import {
   isObj,
   getUserId,
@@ -14,7 +14,6 @@ const MAX_HISTORY = 200;
 
 /* ---------------- helpers ---------------- */
 
-// اگر دوست داری اینو ببری helpers.js بهتره، ولی فعلاً همینجا هم OK هست
 export const makeDefaultGroupConversation = (roomId, roomObj = {}) => ({
   id: roomId,
   roomId,
@@ -24,6 +23,8 @@ export const makeDefaultGroupConversation = (roomId, roomObj = {}) => ({
   unread_count: 0,
   messages: [],
 });
+
+const isTruthy1 = (v) => v === true || v === 1 || v === '1';
 
 const getRoomId = (packet, msg) =>
   Number(
@@ -54,8 +55,8 @@ const isGroupPacket = (packet, msg) =>
   );
 
 const shouldUnread = (d, packet, roomId) => {
-  if (packet?.meta?.unread != null) return !!packet.meta.unread; // explicit
-  return Number(d.selectedRoom) !== Number(roomId); // active room => no unread
+  if (packet?.meta?.unread != null) return !!packet.meta.unread;
+  return Number(d.selectedRoom) !== Number(roomId);
 };
 
 const pushDedupLimit = (arr, msg, msgId, limit = MAX_HISTORY) => {
@@ -74,49 +75,23 @@ const pushDedupLimit = (arr, msg, msgId, limit = MAX_HISTORY) => {
   return arr;
 };
 
-// ✅ NEW: برای schema جدید (Sanctum+Reverb) که DM پیام receiver_id ندارد
-// partnerId را از روی roomId داخل state پیدا می‌کنیم.
-const getPartnerIdFromRoom = (d, roomId, me) => {
-  const rid = Number(roomId);
-  const myId = Number(me);
+// ✅ unwrap برای payloadهایی که بعضی وقت‌ها nested می‌آیند
+const unwrapIncomingPacket = (p) => {
+  if (!isObj(p)) return { packet: {}, msg: null };
 
-  // از DM conversations موجود: partnerId همان key آبجکت است
-  const dm = d.individualMessages || {};
-  for (const pidStr of Object.keys(dm)) {
-    const conv = dm[pidStr];
-    if (Number(conv?.roomId) === rid) return Number(pidStr);
-  }
+  // اگر payload={message: packet} بود:
+  const maybePacket = isObj(p?.message) && isObj(p?.message?.message) ? p.message : p;
+  const msg = isObj(maybePacket?.message) ? maybePacket.message : null;
 
-  // اگر room object با users هم در packet/msg باشد، می‌توانیم مستقیم هم استخراج کنیم
-  // (اختیاری، اما کمک می‌کند)
-  // توجه: شکل users ممکن است آرایه‌ای از {id,...} باشد.
-  // این بخش را نگه می‌داریم چون اگر بعدها packet.room.users داشتی، بدون تغییر کار می‌کند.
-  const roomUsers =
-    d?.roomsById?.[rid]?.users || // اگر چنین state‌ای اضافه کردی
-    null;
-
-  if (Array.isArray(roomUsers)) {
-    const other = roomUsers.find((u) => Number(u?.id) !== myId);
-    if (other?.id != null) return Number(other.id);
-  }
-
-  return null;
+  return { packet: maybePacket, msg };
 };
 
-// ✅ NEW: senderId/receiverId را هم برای schema قدیم و هم جدید بخوان
-const getSenderReceiverCompat = (msg) => {
-  // schema جدید:
-  const senderId =
-    msg?.user_id ?? msg?.sender_id ?? msg?.sender?.id ?? msg?.from_user_id ?? null;
-
-  const receiverId =
-    msg?.receiver_id ??
-    msg?.to_user_id ??
-    msg?.receiver?.id ??
-    msg?.to?.id ??
-    null;
-
-  return { senderId, receiverId };
+// ✅ این پروژه: groupMessages نقش "rooms store" رو داره (DM+Group)
+const upsertRoomInGroupMessages = (d, roomId, patch) => {
+  const key = String(roomId);
+  if (!isObj(d.groupMessages)) d.groupMessages = {};
+  const prev = d.groupMessages[key];
+  d.groupMessages[key] = isObj(prev) ? { ...prev, ...patch } : { id: roomId, ...patch };
 };
 
 /* ---------------- handlers ---------------- */
@@ -171,6 +146,7 @@ export const h = {
     d.errorStates.messages = null;
   },
 
+  // ⚠️ اینجا p عملاً لیست rooms هست (private + group) و ما داخل groupMessages ذخیره می‌کنیم
   setGroupMessages(d, p) {
     if (isObj(p)) {
       d.groupMessages = { ...d.groupMessages, ...p };
@@ -179,18 +155,17 @@ export const h = {
     }
 
     if (!Array.isArray(p)) {
-      d.errorStates.messages = 'Invalid group messages data';
+      d.errorStates.messages = 'Invalid rooms data';
       return;
     }
 
-    d.groupMessages = {
-      ...d.groupMessages,
-      ...p.reduce((acc, g) => {
-        const id = g?.id ?? g?.roomId ?? g?.room_id;
-        if (isObj(g) && id != null) acc[id] = g;
-        return acc;
-      }, {}),
-    };
+    const roomsMap = {};
+    for (const r of p) {
+      const id = r?.id ?? r?.roomId ?? r?.room_id;
+      if (isObj(r) && id != null) roomsMap[String(id)] = r;
+    }
+
+    d.groupMessages = { ...(d.groupMessages || {}), ...roomsMap };
     d.errorStates.messages = null;
   },
 
@@ -198,142 +173,74 @@ export const h = {
     d.selectedRoom = p ?? null;
   },
 
-  // ✅ UPDATED: DM + GROUP + DEDUPE + SMART UNREAD + HISTORY LIMIT
-  // پشتیبانی از schema جدید:
-  // message: { id, chat_room_id, user_id, ... }
-  // و schema قدیم:
-  // message: { sender_id/sender, receiver_id/receiver, ... }
-  updateMessages(d, p) {
-    const packet = p || {};
-    const msg = isObj(packet.message) ? packet.message : null;
+  // ✅ FINAL: rooms list comes from groupMessages => ALWAYS update groupMessages[roomId]
+updateMessages(d, p) {
+  const packet = p || {};
+  const msg = isObj(packet.message) ? packet.message : null;
 
-    if (!msg) {
-      d.errorStates.messages = 'Missing message payload';
-      return;
-    }
+  if (!msg) {
+    d.errorStates.messages = 'Missing message payload';
+    return;
+  }
 
-    const me = getUserId(d.currentUser);
-    if (!me) {
-      d.errorStates.messages = 'Current user not set';
-      return;
-    }
+  const me = getUserId(d.currentUser);
+  if (!me) {
+    d.errorStates.messages = 'Current user not set';
+    return;
+  }
 
-    const roomId = getRoomId(packet, msg);
-    if (!roomId) {
-      d.errorStates.messages = 'Missing roomId';
-      return;
-    }
+  const roomId = getRoomId(packet, msg);
+  if (!roomId) {
+    d.errorStates.messages = 'Missing roomId';
+    return;
+  }
 
-    const createdAt = msg.created_at || msg.timestamp || new Date().toISOString();
+  const createdAt = msg.created_at || msg.timestamp || new Date().toISOString();
+  const msgId = getMsgId(msg, roomId);
+  const unread = shouldUnread(d, packet, roomId);
 
-    // ✅ Prefer real backend id if exists
-    const realId = msg?.id ?? msg?.message_id ?? msg?.uuid ?? null;
-    const msgId = realId ?? getMsgId(msg, roomId);
+  // -------------------------
+  // ✅ 1) ALWAYS update rooms map (groupMessages) because UI rooms list reads from it
+  // -------------------------
+  const existingRoom = d.groupMessages?.[roomId] || d.groupMessages?.[String(roomId)];
+  const incomingRoom = packet.room || msg.room || {};
+  const roomObj = { ...(existingRoom || {}), ...(incomingRoom || {}) };
 
-    const unread = shouldUnread(d, packet, roomId);
+  // keep id correct
+  roomObj.id = roomObj.id ?? roomId;
 
-    // ---------- GROUP ----------
-    if (isGroupPacket(packet, msg)) {
-      const existing = d.groupMessages[roomId];
-      const roomObj = packet.room || msg.room || existing || {};
-      const conv = existing || makeDefaultGroupConversation(roomId, roomObj);
+  // last message
+  roomObj.last_message = msg;
+  roomObj.last_message_at = createdAt;
 
-      conv.name =
-        conv.name ||
-        roomObj.name ||
-        roomObj.title ||
-        roomObj.room_name ||
-        `Group #${roomId}`;
+  // ensure unread_count exists
+  if (roomObj.unread_count == null) roomObj.unread_count = 0;
 
-      conv.last_message = msg;
-      conv.last_message_at = createdAt;
+  // unread rule:
+  // - if not active room => unread++
+  // - if active room => keep as is
+  if (unread) roomObj.unread_count = (roomObj.unread_count || 0) + 1;
 
-      if (!Array.isArray(conv.messages)) conv.messages = [];
-      pushDedupLimit(conv.messages, { ...msg, id: msgId }, msgId);
+  // OPTIONAL: keep a small history in room object (if you want)
+  if (!Array.isArray(roomObj.messages)) roomObj.messages = [];
+  pushDedupLimit(roomObj.messages, { ...msg, id: msgId }, msgId);
 
-      if (unread) conv.unread_count = (conv.unread_count || 0) + 1;
+  // ✅ write back (important: keep same key type used by your store)
+  d.groupMessages[roomId] = roomObj;
 
-      d.groupMessages[roomId] = conv;
-      d.errorStates.messages = null;
-      return;
-    }
-
-    // ---------- DM ----------
-    // 1) اول تلاش: schema قدیم (sender/receiver) از helpers (اگر کار کند)
-    let senderId;
-    let receiverId;
-
-    try {
-      const legacy = getMsgIds?.(msg);
-      senderId = legacy?.senderId ?? null;
-      receiverId = legacy?.receiverId ?? null;
-    } catch {
-      senderId = null;
-      receiverId = null;
-    }
-
-    // 2) اگر legacy نتوانست، از compat reader
-    if (senderId == null) {
-      const compat = getSenderReceiverCompat(msg);
-      senderId = compat.senderId;
-      receiverId = compat.receiverId;
-    }
-
-    // ✅ حالت A: schema قدیم (sender+receiver داریم)
-    if (senderId != null && receiverId != null) {
-      const partnerId = Number(me) === Number(senderId) ? receiverId : senderId;
-
-      const existing = d.individualMessages[partnerId];
-      const userObj = d.users?.[partnerId] || packet.from_user || msg.from_user || {};
-      const conv = existing || makeDefaultConversation(partnerId, userObj, roomId);
-
-      if (!conv.roomId) conv.roomId = roomId;
-
-      conv.last_message = msg;
-      conv.last_message_at = createdAt;
-
-      if (!Array.isArray(conv.messages)) conv.messages = [];
-      pushDedupLimit(conv.messages, { ...msg, id: msgId }, msgId);
-
-      const fromOther = Number(senderId) !== Number(me);
-      if (fromOther && unread) conv.unread_count = (conv.unread_count || 0) + 1;
-
-      d.individualMessages[partnerId] = conv;
-      d.errorStates.messages = null;
-      return;
-    }
-
-    // ✅ حالت B: schema جدید (فقط user_id داریم، receiver نداریم)
-    if (senderId == null) {
-      d.errorStates.messages = 'Invalid message schema (missing user_id/sender_id)';
-      return;
-    }
-
-    // partnerId را از روی roomId در state پیدا کن
-    let partnerId = getPartnerIdFromRoom(d, roomId, me);
-
-    // اگر هنوز state کامل sync نشده، fallback منطقی:
-    // اگر پیام از دیگری است → partner همان sender است
-    if (!partnerId) {
-      const fallbackPartner =
-        Number(senderId) === Number(me) ? null : Number(senderId);
-      if (fallbackPartner) partnerId = fallbackPartner;
-    }
-
-    if (!partnerId) {
-      d.errorStates.messages = 'Cannot infer partnerId for DM room';
-      return;
-    }
+  // -------------------------
+  // ✅ 2) (Optional) keep legacy individualMessages updated too (won't hurt)
+  // -------------------------
+  const { senderId, receiverId } = getMsgIds(msg);
+  if (senderId != null && receiverId != null) {
+    const partnerId = Number(me) === Number(senderId) ? receiverId : senderId;
 
     const existing = d.individualMessages[partnerId];
-    const userObj = d.users?.[partnerId] || msg?.user || {};
+    const userObj = d.users?.[partnerId] || packet.from_user || msg.from_user || msg.user || {};
     const conv = existing || makeDefaultConversation(partnerId, userObj, roomId);
-
-    if (!conv.roomId) conv.roomId = roomId;
 
     conv.last_message = msg;
     conv.last_message_at = createdAt;
-
     if (!Array.isArray(conv.messages)) conv.messages = [];
     pushDedupLimit(conv.messages, { ...msg, id: msgId }, msgId);
 
@@ -341,8 +248,11 @@ export const h = {
     if (fromOther && unread) conv.unread_count = (conv.unread_count || 0) + 1;
 
     d.individualMessages[partnerId] = conv;
-    d.errorStates.messages = null;
-  },
+  }
+
+  d.errorStates.messages = null;
+},
+
 
   updateStatus(d, p) {
     const { senderId, status } = p || {};
@@ -352,9 +262,16 @@ export const h = {
   },
 
   clearUnreadCount(d, p) {
-    const partnerId = p;
-    if (partnerId != null && d.individualMessages[partnerId]) {
-      d.individualMessages[partnerId].unread_count = 0;
+    const roomOrPartnerId = p;
+
+    // ✅ اگر caller roomId می‌دهد: از rooms store پاک کن
+    if (roomOrPartnerId != null && d.groupMessages?.[String(roomOrPartnerId)]) {
+      d.groupMessages[String(roomOrPartnerId)].unread_count = 0;
+    }
+
+    // ✅ اگر caller partnerId می‌دهد: DM unread را هم صفر کن
+    if (roomOrPartnerId != null && d.individualMessages?.[roomOrPartnerId]) {
+      d.individualMessages[roomOrPartnerId].unread_count = 0;
     }
   },
 

@@ -1,224 +1,124 @@
 // src/hooks/chat/useChatLists.js
-import { useMemo, useEffect, useRef } from 'react';
+import { useMemo } from 'react';
 import { useSelector } from 'react-redux';
-import {
-  selectIndividualRaw,
-  // ❌ selectGroupRaw (حذف شد)
-  selectRoomsRaw,
-  selectLoading,
-  selectError,
-  selectTypingIndicators,
-  selectCurrentUserId,
-  selectUsersByIdRaw,
-} from '@/selectors/messageSelectors';
 
 const DEV = import.meta.env.DEV === true;
-const DEBUG_CHAT = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+const log = (...a) => DEBUG && console.log('[useChatLists]', ...a);
 
-const EMPTY_OBJ = Object.freeze({});
-const EMPTY_ARR = Object.freeze([]);
+const safeArr = (v) => (Array.isArray(v) ? v : []);
+const toNum = (v) => (v == null ? null : Number(v));
 
-const isTruthy1 = (v) => v === true || v === 1 || v === '1';
-const coerceId = (v) => (v == null ? null : Number(v) || String(v));
+function toRoomArray(groupMessagesMap) {
+  if (!groupMessagesMap) return [];
+  if (Array.isArray(groupMessagesMap)) return groupMessagesMap;
+  if (typeof groupMessagesMap === 'object') return Object.values(groupMessagesMap).filter(Boolean);
+  return [];
+}
 
-const pickPartnerIdFromIdsArray = (ids, currentUserId) => {
-  if (!Array.isArray(ids) || !ids.length || !currentUserId) return null;
-  const me = coerceId(currentUserId);
-  return ids.map(coerceId).find((id) => id != null && id !== me) ?? null;
-};
+function getLastAt(room) {
+  return (
+    room?.last_message_at ||
+    room?.lastMessage?.created_at ||
+    room?.last_message?.created_at ||
+    room?.updated_at ||
+    room?.created_at ||
+    null
+  );
+}
 
-const normalizeDmList = (items) => {
-  const mapped = (items || []).filter(Boolean).sort((a, b) => {
-    const ta = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
-    const tb = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
-    return tb - ta;
-  });
-  return mapped;
-};
+export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
+  const q = String(searchQuery || '').trim().toLowerCase();
 
-const filterByQuery = (list, q, key) => {
-  const s = (q || '').toLowerCase().trim();
-  if (!s) return list;
-  return list.filter((x) => String(x?.[key] || '').toLowerCase().includes(s));
-};
+  const roomsMap = useSelector((s) => s?.messages?.groupMessages);
+  const typingIndicators = useSelector((s) => s?.messages?.typingIndicators) || {};
+  const loading = useSelector((s) => Boolean(s?.messages?.loadingStates?.messages));
+  const error = useSelector((s) => s?.messages?.errorStates?.messages) || null;
 
-export function useChatLists({ searchQuery } = {}) {
-  // ✅ اگر selectorها null دادند، ما اینجا ref ثابت می‌دیم
-  const individualRaw = useSelector(selectIndividualRaw) ?? EMPTY_OBJ;
-  const roomsRaw = useSelector(selectRoomsRaw) ?? EMPTY_OBJ;
-  const usersById = useSelector(selectUsersByIdRaw) ?? EMPTY_OBJ;
+  const roomsAll = useMemo(() => {
+    const arr = toRoomArray(roomsMap);
 
-  const currentUserId = useSelector(selectCurrentUserId);
-  const loading = useSelector(selectLoading);
-  const error = useSelector(selectError);
-  const typingIndicators = useSelector(selectTypingIndicators) ?? EMPTY_OBJ;
+    const normalized = arr.map((r) => ({
+      ...r,
+      id: r?.id ?? r?.room_id ?? r?.roomId ?? r?.chat_room_id,
+      is_private: Boolean(r?.is_private),
+      last_message: r?.last_message ?? r?.lastMessage ?? null,
+      last_message_at: r?.last_message_at ?? getLastAt(r),
+    }));
 
-  // -------------------------
-  // ✅ DEBUG: detect rooms count change (2 -> 0 etc.)
-  // -------------------------
-  const prevRoomsCountRef = useRef(null);
-  const prevRoomsSampleRef = useRef(EMPTY_ARR);
+    normalized.sort((a, b) => {
+      const ta = new Date(getLastAt(a) || 0).getTime();
+      const tb = new Date(getLastAt(b) || 0).getTime();
+      return tb - ta;
+    });
 
-  useEffect(() => {
-    if (!DEBUG_CHAT) return;
+    return normalized;
+  }, [roomsMap]);
 
-    const roomsArr = Object.values(roomsRaw || EMPTY_OBJ);
-    const count = roomsArr.length;
+  const { dmList, groupList } = useMemo(() => {
+    const all = roomsAll;
 
-    if (prevRoomsCountRef.current == null) {
-      prevRoomsCountRef.current = count;
-      prevRoomsSampleRef.current = roomsArr.slice(0, 2);
-      console.log('[useChatLists][init] rooms snapshot', {
-        count,
-        currentUserId: currentUserId ?? null,
-        sample: roomsArr.slice(0, 2),
-      });
-      return;
-    }
-
-    // اگر count تغییر کرد (خصوصاً رفت روی 0)
-    if (count !== prevRoomsCountRef.current) {
-      const before = prevRoomsCountRef.current;
-      prevRoomsCountRef.current = count;
-
-      console.warn('[useChatLists][rooms changed]', {
-        before,
-        after: count,
-        currentUserId: currentUserId ?? null,
-        sampleNow: roomsArr.slice(0, 3),
-        sampleBefore: prevRoomsSampleRef.current,
-      });
-
-      // این خیلی کمک می‌کند بفهمی چه چیزی باعث شد rooms پاک شود
-      console.trace('[useChatLists][rooms changed] trace');
-
-      prevRoomsSampleRef.current = roomsArr.slice(0, 2);
-    }
-  }, [roomsRaw, currentUserId]);
-
-  // ---- DM list ----
-  const dmList = useMemo(() => {
-    const out = [];
-
-    // 1) اگر individualRaw (legacy) داریم
-    const existingVals = Object.values(individualRaw || EMPTY_OBJ);
-    if (existingVals.length) {
-      for (const v of existingVals) {
-        const roomId = coerceId(v?.roomId ?? v?.room_id ?? v?.chat_room_id ?? null);
-        const partnerIdGuess = coerceId(
-          v?.partnerId ?? v?.partner_id ?? v?.user_id ?? v?.id ?? null,
-        );
-
-        const room = roomId != null ? roomsRaw?.[String(roomId)] : null;
-        const ids =
-          Array.isArray(v?.users) ? v.users :
-          Array.isArray(room?.users) ? room.users :
-          null;
-
-        const partnerId = partnerIdGuess ?? pickPartnerIdFromIdsArray(ids, currentUserId);
-
-        if (!roomId || !partnerId) continue;
-
-        const u = usersById?.[String(partnerId)] ?? null;
-
-        out.push({
-          ...v,
-          roomId,
-          partnerId,
-          first_name: v?.first_name || u?.first_name || u?.name || u?.email || `User #${partnerId}`,
-          last_message: v?.last_message ?? room?.last_message ?? v?.lastMessage ?? '',
-          last_message_at:
-            v?.last_message_at ??
-            room?.last_message_at ??
-            v?.updated_at ??
-            v?.created_at ??
-            null,
-          photo: v?.photo || u?.photo || u?.profile_picture || null,
-          // debug helpers (اختیاری)
-          __src: 'individualRaw',
+    const filtered = !q
+      ? all
+      : all.filter((r) => {
+          const name = String(r?.name || '').toLowerCase();
+          const desc = String(r?.description || '').toLowerCase();
+          const lastText = String(r?.last_message?.content || '').toLowerCase();
+          return name.includes(q) || desc.includes(q) || lastText.includes(q);
         });
-      }
-      return normalizeDmList(out);
-    }
 
-    // 2) fallback: از roomsRaw بساز (private ها)
-    const rooms = Object.values(roomsRaw || EMPTY_OBJ);
-    for (const r of rooms) {
-      if (!isTruthy1(r?.is_private)) continue;
+    const groups = filtered.filter((r) => r?.is_private === false);
 
-      const roomId = r?.id ?? null;
-      const partnerId = pickPartnerIdFromIdsArray(r?.users, currentUserId);
+    const dms = filtered
+      .filter((r) => r?.is_private === true)
+      .map((room) => {
+        const users = safeArr(room?.users);
 
-      if (!roomId) continue;
+        const partner =
+          currentUserId != null
+            ? users.find((u) => toNum(u?.id) !== toNum(currentUserId)) || users[0] || null
+            : users[0] || null;
 
-      const u = partnerId ? (usersById?.[String(partnerId)] ?? null) : null;
+        const partnerId = partner?.id ?? null;
 
-      out.push({
-        roomId,
-        partnerId,
-        first_name:
-          u?.first_name ||
-          u?.name ||
-          u?.email ||
-          (partnerId ? `User #${partnerId}` : 'Private Chat'),
-        last_message: r?.last_message ?? '',
-        last_message_at: r?.last_message_at ?? null,
-        photo: u?.photo || u?.profile_picture || null,
-        is_private: r?.is_private,
-        __src: 'roomsRaw(private)',
+        const lastMsgObj = room?.last_message ?? null;
+        const lastMsgText =
+          (typeof lastMsgObj === 'string' ? lastMsgObj : lastMsgObj?.content) ||
+          room?.last_message_text ||
+          '';
+
+        return {
+          roomId: room?.id,
+          partnerId,
+          partner,
+          first_name: partner?.name ?? partner?.email ?? 'Unknown',
+          email: partner?.email ?? null,
+
+          is_private: true,
+          users,
+          last_message_obj: lastMsgObj,
+          last_message_text: lastMsgText,
+          last_message_at: room?.last_message_at ?? null,
+
+          unread_count: room?.unread_count ?? 0,
+        };
       });
-    }
 
-    return normalizeDmList(out);
-  }, [individualRaw, roomsRaw, usersById, currentUserId]);
+    return { dmList: dms, groupList: groups };
+  }, [roomsAll, q, currentUserId]);
 
-  // ---- groups ----
-  // ✅ groups را مستقیم از roomsRaw می‌سازیم (نه selectGroupRaw)
-  const groupList = useMemo(() => {
-    const vals = Object.values(roomsRaw || EMPTY_OBJ);
-    return vals.filter((r) => !isTruthy1(r?.is_private));
-  }, [roomsRaw]);
+  useMemo(() => {
+    if (!DEBUG) return null;
+    log('snapshot', {
+      roomsCount: roomsAll.length,
+      dmCount: dmList.length,
+      groupCount: groupList.length,
+      currentUserId,
+      dmSample: dmList.slice(0, 2).map((x) => ({ roomId: x.roomId, partnerId: x.partnerId })),
+      groupSample: groupList.slice(0, 2).map((x) => ({ id: x.id, name: x.name, is_private: x.is_private })),
+    });
+    return null;
+  }, [roomsAll, dmList, groupList, currentUserId]);
 
-  const filteredDm = useMemo(
-    () => filterByQuery(dmList, searchQuery, 'first_name'),
-    [dmList, searchQuery],
-  );
-
-  const filteredGroups = useMemo(
-    () => filterByQuery(groupList, searchQuery, 'name'),
-    [groupList, searchQuery],
-  );
-
-  // ---- small, stable debug ----
-  const prevSig = useRef('');
-  useEffect(() => {
-    if (!DEBUG_CHAT) return;
-
-    const sigObj = {
-      roomsCount: Object.values(roomsRaw || EMPTY_OBJ).length,
-      dmCount: filteredDm.length,
-      groupCount: filteredGroups.length,
-      currentUserId: currentUserId ?? null,
-      loading: Boolean(loading),
-      hasError: Boolean(error),
-      hasUsersById: Object.keys(usersById || EMPTY_OBJ).length > 0,
-    };
-
-    const sig = JSON.stringify(sigObj);
-
-    if (sig !== prevSig.current) {
-      prevSig.current = sig;
-      console.log('[useChatLists] snapshot', sigObj);
-      console.log('[useChatLists] dm sample', filteredDm.slice(0, 2));
-      console.log('[useChatLists] group sample', filteredGroups.slice(0, 2));
-    }
-  }, [roomsRaw, filteredDm, filteredGroups, currentUserId, loading, error, usersById]);
-
-  return {
-    dmList: filteredDm,
-    groupList: filteredGroups,
-    loading,
-    error,
-    typingIndicators,
-  };
+  return { dmList, groupList, typingIndicators, loading, error };
 }

@@ -4,7 +4,7 @@ import { Spinner, Alert } from 'react-bootstrap';
 export default function Gate({ loading, error, onRetry, children }) {
   if (loading) return <Spinner animation="border" variant="primary" />;
 
-  if (!error)
+  if (error)
     return (
       <Alert variant="danger">
         Error loading data. {String(error)}

@@ -49,10 +49,15 @@ export const selectRoom = (roomId) => ({
  * Updates messages based on different scenarios: new message, typing indicator, or status update.
  * @param {Object} msg - The message object containing message details.
  */
-export const updateMessages = (message) => ({
+// ✅ packet را مستقیم بفرست (نه {message})
+
+// ✅ packet را مستقیم بفرست
+export const updateMessages = (packet) => ({
   type: messageActionTypes.UPDATE_MESSAGES,
-  payload: { message },
+  payload: packet, // ✅ مستقیم
 });
+
+
 
 /**
  * Updates the online status of a user in a conversation.

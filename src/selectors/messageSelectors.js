@@ -26,10 +26,10 @@ export const selectCurrentUserId = createSelector([selectAuthState], (auth) => {
 // ✅ IMPORTANT: اینا نباید createSelector باشند (identity warning میده)
 // ---------- RAW selectors (NO createSelector) ----------
 export const selectRoomsRaw = (state) =>
-  (state.messages?.groupMessages ??
-    state.messages?.roomsRaw ??
-    state.messages?.rooms ??
+  (state.messages?.rooms ??
+    state.messages?.roomsRaw ?? // اگر قدیمی داشتی
     EMPTY_OBJ);
+
 
 export const selectIndividualRaw = (state) =>
   state.messages?.individualMessages ?? EMPTY_OBJ;
@@ -177,3 +177,4 @@ export const selectGroupMessages = createSelector([selectRoomsRaw], (roomsRaw) =
   }
   return out;
 });
+

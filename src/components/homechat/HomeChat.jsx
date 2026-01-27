@@ -1,6 +1,7 @@
+// src/components/HomeChat.jsx
 import React, { useEffect, useMemo, useReducer, useRef } from 'react';
 import { Container, Row, Col } from 'react-bootstrap';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 
 import BackendPicker from '@/components/BackendPicker';
 import LogoutButton from '@/components/auth/LogoutButton';
@@ -42,7 +43,6 @@ function reducer(state, action) {
   }
 }
 
-// ✅ restored removed (we don't restore room from storage anymore)
 const initialState = { q: '', roomId: null, showUsers: false };
 
 function EmptyRoom() {
@@ -94,57 +94,66 @@ export default function HomeChat() {
 
   // lists
   const { dmList, groupList, typingIndicators, loading, error } = useChatLists({
-    searchQuery: q,
-  });
+  searchQuery: q,
+  currentUserId, // ✅ from useAuthBasics()
+});
+
 
   // rooms/data
   const { retryRooms } = useChatData({ endpoints, accessToken: bareToken });
-useEffect(() => {
-  console.log('[HomeChat] FORCE rooms debug', {
-    endpointsKeys: endpoints ? Object.keys(endpoints) : null,
-    roomsUrl: endpoints?.rooms,
-    hasToken: Boolean(bareToken),
-    tokenPreview: (bareToken || '').slice(0, 18) + '...',
-    retryRoomsType: typeof retryRooms,
-    retryRoomsValue: retryRooms,
-  });
 
-  // 1) اگر retryRooms درست باشد اجرا می‌شود
-  if (typeof retryRooms === 'function') {
-    console.log('[HomeChat] calling retryRooms()...');
-    retryRooms();
-  } else {
-    console.warn('[HomeChat] retryRooms is NOT a function -> will do direct fetch test');
-  }
+  // ✅ store debug: confirms whether reducer is under state.messages
+  const roomsMapDebug = useSelector((s) => s?.messages?.groupMessages);
+  useEffect(() => {
+    if (!DEBUG_CHAT) return;
+    console.log('[HomeChat] store rooms keys', {
+      slice: roomsMapDebug ? 'messages.groupMessages' : 'missing',
+      keys: roomsMapDebug ? Object.keys(roomsMapDebug).slice(0, 8) : null,
+    });
+  }, [roomsMapDebug]);
 
-  // 2) ✅ تست مستقیم (حتی اگر hook مشکل داشت)
-  (async () => {
-    try {
-      if (!endpoints?.rooms) return console.warn('[HomeChat] roomsUrl missing');
-      if (!bareToken) return console.warn('[HomeChat] token missing');
+  // ✅ IMPORTANT: run when token + endpoints are READY (NOT [] once)
+  useEffect(() => {
+    if (!endpoints?.rooms) return;
+    if (!bareToken) return;
 
-      const res = await fetch(endpoints.rooms, {
-        headers: {
-          Authorization: `Bearer ${bareToken}`,
-          Accept: 'application/json',
-        },
-      });
+    console.log('[HomeChat] FORCE rooms debug', {
+      roomsUrl: endpoints.rooms,
+      hasToken: Boolean(bareToken),
+      tokenPreview: (bareToken || '').slice(0, 18) + '...',
+      retryRoomsType: typeof retryRooms,
+    });
 
-      const text = await res.text();
-
-      console.log('[HomeChat] DIRECT rooms fetch result', {
-        ok: res.ok,
-        status: res.status,
-        contentType: res.headers.get('content-type'),
-        preview: (text || '').slice(0, 220),
-      });
-    } catch (e) {
-      console.error('[HomeChat] DIRECT rooms fetch exception', e);
+    if (typeof retryRooms === 'function') {
+      console.log('[HomeChat] calling retryRooms()...');
+      retryRooms();
+    } else {
+      console.warn('[HomeChat] retryRooms is NOT a function -> will do direct fetch test');
     }
-  })();
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+    // ✅ direct fetch test (always matches backend truth)
+    (async () => {
+      try {
+        const res = await fetch(endpoints.rooms, {
+          headers: {
+            Authorization: `Bearer ${bareToken}`,
+            Accept: 'application/json',
+          },
+        });
+
+        const text = await res.text();
+
+        console.log('[HomeChat] DIRECT rooms fetch result', {
+          ok: res.ok,
+          status: res.status,
+          contentType: res.headers.get('content-type'),
+          preview: (text || '').slice(0, 220),
+        });
+      } catch (e) {
+        console.error('[HomeChat] DIRECT rooms fetch exception', e);
+      }
+    })();
+  }, [endpoints?.rooms, bareToken, retryRooms]);
 
   // users query ✅
   const { usersQ, filteredUsers, handleFriendshipRequest, handleRespondFriendRequest } =
@@ -192,7 +201,7 @@ useEffect(() => {
   });
 
   const onRetryAll = useEvent(() => {
-    retryRooms();
+    retryRooms?.();
     usersQ.refetch?.();
   });
 
@@ -235,7 +244,12 @@ useEffect(() => {
     if (!DEBUG_CHAT) return;
 
     const ids = Array.from(onlineIdSet);
-    const payload = { backend: effectiveKind, currentUserId, onlineCount: ids.length, onlineIds: ids };
+    const payload = {
+      backend: effectiveKind,
+      currentUserId,
+      onlineCount: ids.length,
+      onlineIds: ids,
+    };
     const sig = stableJson(payload);
 
     if (sig !== prevRef.current.presence) {
@@ -307,7 +321,6 @@ useEffect(() => {
 
         <Col md={8}>
           {roomId ? (
-            // ✅ hard remount on room change => never show old room messages
             <ChatWindow
               key={roomId}
               roomId={roomId}
