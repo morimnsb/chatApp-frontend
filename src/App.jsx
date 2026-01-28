@@ -35,7 +35,7 @@ function Splash() {
   );
 }
 
-// selectors (بهتره بعداً ببری تو authSlice/selectors.js)
+// selectors
 const selectToken = (s) => s.auth?.token || s.auth?.access_token || null;
 const selectCurrentUserId = (s) =>
   s.auth?.user?.id ??
@@ -45,6 +45,11 @@ const selectCurrentUserId = (s) =>
   null;
 
 const selectIsAuthed = (s) => Boolean(selectToken(s) && selectCurrentUserId(s));
+
+function SmartFallback() {
+  const isAuthed = useSelector(selectIsAuthed);
+  return <Navigate to={isAuthed ? '/' : '/login'} replace />;
+}
 
 function RootRouter() {
   const dispatch = useDispatch();
@@ -56,7 +61,6 @@ function RootRouter() {
   useEffect(() => {
     if (didInitRef.current) return;
     didInitRef.current = true;
-
     dispatch(meThunk());
   }, [dispatch]);
 
@@ -79,7 +83,7 @@ function RootRouter() {
             <Route path="/change-password" element={<ChangePasswordForm />} />
           </Route>
 
-          {/* fallback (هوشمند) */}
+          {/* fallback */}
           <Route path="*" element={<SmartFallback />} />
         </Routes>
       </React.Suspense>
@@ -87,29 +91,26 @@ function RootRouter() {
   );
 }
 
-function SmartFallback() {
-  const isAuthed = useSelector(selectIsAuthed);
-  return <Navigate to={isAuthed ? '/' : '/login'} replace />;
-}
-
 function AppShell({ children }) {
   const bootstrapped = useSelector(selectBootstrapped);
-
   const token = useSelector(selectToken);
   const currentUserId = useSelector(selectCurrentUserId);
 
-  // اگر BackendPicker داری، این رو از store بگیر:
-  // const effectiveKind = useSelector((s) => s.api?.backendKind ?? 'reverb');
+  // اگر BackendPicker داری، بعداً از store بگیر
   const effectiveKind = useMemo(() => 'reverb', []);
 
   // فقط وقتی آماده‌ایم هوک رو فعال کن
-  const shouldEnableUserEvents = bootstrapped && token && currentUserId;
+  const shouldEnableUserEvents = Boolean(bootstrapped && token && currentUserId);
 
-  useUserEvents(
-    shouldEnableUserEvents
-      ? { effectiveKind, accessToken: token, currentUserId }
-      : { effectiveKind, accessToken: null, currentUserId: null }
-  );
+  const selectedRoomId = useSelector((s) => s.messages?.selectedRoom?.id ?? s.messages?.selectedRoom ?? null);
+
+useUserEvents({
+  effectiveKind,
+  accessToken: shouldEnableUserEvents ? token : null,
+  currentUserId: shouldEnableUserEvents ? currentUserId : null,
+  selectedRoomId,
+});
+
 
   return (
     <>
