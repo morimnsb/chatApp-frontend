@@ -79,7 +79,7 @@ const devLoggerMiddleware = (storeAPI) => (next) => (action) => {
       },
     };
 
-    // eslint-disable-next-line no-console
+     
     console.log(`%c[REDUX] ${type}`, 'color:#7dd3fc;font-weight:900;', {
       ms: Number(endedAt - startedAt).toFixed(1),
       payload: action.payload,

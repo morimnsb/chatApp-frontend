@@ -1,9 +1,9 @@
 // src/hooks/useUserEvents.js
 import { useEffect, useRef } from 'react';
 import { useDispatch } from 'react-redux';
-import { getOrCreateEcho } from '@/reverb/echo';
 import { updateMessages } from '@/actions/messageActions';
 import { toast } from 'react-toastify';
+import { getOrCreateEcho } from '@/config/realtime';
 
 const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
@@ -21,14 +21,14 @@ export default function useUserEvents({
 }) {
   const dispatch = useDispatch();
 
-  // ✅ فقط برای toast، نه برای resubscribe
+  // فقط برای toast، نه resubscribe
   const selectedRoomRef = useRef(selectedRoomId);
   useEffect(() => {
     selectedRoomRef.current = selectedRoomId;
   }, [selectedRoomId]);
 
   const subRef = useRef({
-    key: null,            // ✅ مهم: کلید اشتراک
+    key: null,
     echo: null,
     channelName: null,
     channel: null,
@@ -43,11 +43,11 @@ export default function useUserEvents({
     const hasUserId = currentUserId != null;
 
     const tokenStr = accessToken ? String(accessToken) : '';
-    // ✅ کلید پایدار: کل توکن را نذار، فقط یک slice که ثابت می‌ماند
     const tokenKey = tokenStr ? tokenStr.slice(0, 18) : '';
     const channelName = currentUserId != null ? `user.${currentUserId}` : null;
 
-    const nextKey = isReverb && hasToken && hasUserId ? `${kind}|${channelName}|${tokenKey}` : null;
+    const nextKey =
+      isReverb && hasToken && hasUserId ? `${kind}|${channelName}|${tokenKey}` : null;
 
     log('effect()', {
       kind,
@@ -69,7 +69,14 @@ export default function useUserEvents({
       });
 
       if (!prev.echo || !prev.channelName || !prev.channel) {
-        subRef.current = { key: null, echo: null, channelName: null, channel: null, binds: [], connBound: prev.connBound };
+        subRef.current = {
+          key: null,
+          echo: null,
+          channelName: null,
+          channel: null,
+          binds: [],
+          connBound: prev.connBound,
+        };
         return;
       }
 
@@ -87,11 +94,18 @@ export default function useUserEvents({
       try {
         const pch = prev.channel?.pusher?.channels?.channels?.[`private-${prev.channelName}`];
         prev.binds.forEach((fn) => {
-          try { pch?.unbind_global?.(fn); } catch {}
+          try {
+            pch?.unbind_global?.(fn);
+          } catch (e) {
+            // ignore
+            void e;
+          }
         });
-      } catch {}
+      } catch (e) {
+        void e;
+      }
 
-      // ✅ leave واقعی
+      // leave
       try {
         prev.echo.leave(`private-${prev.channelName}`);
         dlog('echo.leave ok', `private-${prev.channelName}`);
@@ -99,33 +113,40 @@ export default function useUserEvents({
         dlog('echo.leave failed', e);
       }
 
-      subRef.current = { key: null, echo: null, channelName: null, channel: null, binds: [], connBound: prev.connBound };
+      subRef.current = {
+        key: null,
+        echo: null,
+        channelName: null,
+        channel: null,
+        binds: [],
+        connBound: prev.connBound,
+      };
     };
 
     // not ready
     if (!nextKey) {
       log('not ready -> cleanup');
       cleanup();
-      return;
+      return undefined;
     }
 
-    // ✅ اگر کلید عوض نشده، هیچ کاری نکن (حتی اگر selectedRoom تغییر کرد)
+    // same key => no resubscribe
     if (subRef.current.key === nextKey && subRef.current.channel) {
       log('same key -> skip resubscribe ✅', { key: nextKey });
-      return;
+      return undefined;
     }
 
-    // (کلید عوض شده) → باید دوباره بسازیم
+    // key changed => cleanup then subscribe
     cleanup();
 
     const echo = getOrCreateEcho(accessToken);
     if (!echo) {
       log('getOrCreateEcho returned null -> cleanup');
       cleanup();
-      return;
+      return undefined;
     }
 
-    // connection debug فقط یکبار
+    // connection debug only once
     try {
       const conn = echo.connector?.pusher?.connection;
       if (conn && !subRef.current.connBound) {
@@ -144,7 +165,7 @@ export default function useUserEvents({
 
     const channel = echo.private(channelName);
 
-    // bind_global (اگر موجود بود)
+    // bind_global
     const binds = [];
     try {
       const pusherChannel = channel?.pusher?.channels?.channels?.[`private-${channelName}`];
@@ -190,19 +211,25 @@ export default function useUserEvents({
 
         const activeRoom = selectedRoomRef.current;
         if (!activeRoom || Number(activeRoom) !== Number(roomId)) {
-          toast.info(preview ? `${fromName || 'New message'}: ${preview}` : (fromName || 'New message'));
+          toast.info(preview ? `${fromName || 'New message'}: ${preview}` : fromName || 'New message');
         } else {
           dlog('toast skipped (room active)', { activeRoom, roomId });
         }
       });
+
       log('listen attached ✅', ev);
     });
 
-    subRef.current = { key: nextKey, echo, channelName, channel, binds, connBound: subRef.current.connBound };
+    subRef.current = {
+      key: nextKey,
+      echo,
+      channelName,
+      channel,
+      binds,
+      connBound: subRef.current.connBound,
+    };
 
     return cleanup;
-
-    // ✅ مهم: selectedRoomId اینجا نیست
   }, [dispatch, effectiveKind, accessToken, currentUserId]);
 }
 
@@ -210,7 +237,8 @@ function safePreview(x) {
   try {
     const s = JSON.stringify(x);
     return s.length > 220 ? s.slice(0, 220) + '…' : s;
-  } catch {
+  } catch (e) {
+    void e;
     return String(x);
   }
 }

@@ -1,7 +1,16 @@
 {
-  "cSpell.words": [
-    "chatrooms",
-    "conv",
-    "profilephoto"
-  ]
+  "eslint.enable": true,
+
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact"
+  ],
+
+  "eslint.experimental.useFlatConfig": true,
+
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true
+  },
+
+  "editor.formatOnSave": false
 }

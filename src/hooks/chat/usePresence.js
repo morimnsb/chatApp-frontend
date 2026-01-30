@@ -1,6 +1,7 @@
 // src/hooks/chat/usePresence.js
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import useGlobalWebSocket from '@/hooks/useGlobalWebSocket';
+import { getOrCreateEcho, getEchoUnsafe } from '@/config/realtime';
 
 const PRESENCE_NAME = 'presence.global';
 
@@ -30,6 +31,17 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
   const instanceIdRef = useRef(Math.random().toString(16).slice(2));
   const { log, dlog, dwarn } = useRef(mkLoggers(instanceIdRef.current)).current;
 
+  const isReverb = useMemo(
+    () => String(backendKind || '').toLowerCase() === 'reverb',
+    [backendKind],
+  );
+
+  // 👇 برای اینکه cleanup لاگ stale نباشه
+  const onlineCountRef = useRef(0);
+  useEffect(() => {
+    onlineCountRef.current = onlineUsers?.length || 0;
+  }, [onlineUsers]);
+
   dlog('render', {
     backendKind,
     isDev: import.meta.env.DEV === true,
@@ -46,20 +58,32 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
     handleGlobalNotification: onGlobalNotification,
   });
 
-  const isReverb = useMemo(() => String(backendKind || '').toLowerCase() === 'reverb', [backendKind]);
-
   const joinedRef = useRef(false);
   const chRef = useRef(null);
   const joinAttemptsRef = useRef(0);
 
-  const joinPresence = (reason = 'unknown') => {
+  const leavePresence = useCallback((echo, reason = 'cleanup') => {
+    try {
+      if (joinedRef.current) {
+        dlog('echo.leave()', { presence: PRESENCE_NAME, reason });
+        echo.leave(PRESENCE_NAME);
+      } else {
+        dlog('skip leave (not joined)', { reason });
+      }
+    } catch (e) {
+      dwarn('echo.leave failed', e);
+    } finally {
+      joinedRef.current = false;
+      chRef.current = null;
+      setOnlineUsers([]);
+    }
+  }, [dlog, dwarn]);
+
+  const joinPresence = useCallback((echo, reason = 'unknown') => {
     if (joinedRef.current) {
       dlog('joinPresence skipped (already joined) ✅', { reason });
       return;
     }
-
-    const echo = window.__echo;
-    if (!echo) return dwarn('no window.__echo');
 
     const conn = echo?.connector?.pusher?.connection;
     dlog('joinPresence called', {
@@ -72,11 +96,9 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
     try {
       joinAttemptsRef.current += 1;
 
-      // ✅ همینجا true کن تا اگر connected دوباره آمد، دوباره join نزند
-      joinedRef.current = true;
-
       const ch = echo.join(PRESENCE_NAME);
       chRef.current = ch;
+      joinedRef.current = true; // ✅ فقط بعد از join موفق
 
       dlog('echo.join() OK ✅', { presence: PRESENCE_NAME });
 
@@ -111,11 +133,12 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
       chRef.current = null;
       dwarn('join failed', e);
     }
-  };
+  }, [dlog, dwarn]);
 
   useEffect(() => {
     log('effect mount', { isReverb, currentUserId });
 
+    // reset وقتی backend عوض میشه
     if (!isReverb) {
       dlog('not reverb -> reset');
       joinedRef.current = false;
@@ -124,9 +147,20 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
       return () => log('effect cleanup (not reverb)');
     }
 
-    const echo = window.__echo;
+    // بدون توکن یا یوزر، حضور معنی نداره
+    if (!token || !currentUserId) {
+      dlog('missing token/user -> reset', { hasToken: Boolean(token), currentUserId });
+      joinedRef.current = false;
+      chRef.current = null;
+      setOnlineUsers([]);
+      return () => log('effect cleanup (missing token/user)');
+    }
+
+    // ✅ Echo singleton: اگر قبلاً ساخته شده استفاده کن، اگر نه بساز
+    const echo = getEchoUnsafe() || getOrCreateEcho(token);
+
     if (!echo) {
-      dwarn('no echo in effect');
+      dwarn('no echo (getOrCreateEcho returned null) — check env');
       return () => log('effect cleanup (no echo)');
     }
 
@@ -138,11 +172,13 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
 
     const onConnected = () => {
       dlog('conn connected → joinPresence');
-      joinPresence('conn.connected');
+      joinPresence(echo, 'conn.connected');
     };
 
     // اگر همین الان وصل است
-    if (conn.state === 'connected') joinPresence('conn.state===connected');
+    if (conn.state === 'connected') {
+      joinPresence(echo, 'conn.state===connected');
+    }
 
     dlog('binding conn.connected listener');
     conn.bind('connected', onConnected);
@@ -150,7 +186,7 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
     return () => {
       log('effect cleanup', {
         joined: joinedRef.current,
-        onlineCount: onlineUsers?.length || 0,
+        onlineCount: onlineCountRef.current,
         connState: conn?.state,
         socketId: conn?.socket_id,
       });
@@ -162,26 +198,12 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
         dwarn('unbind connected failed', e);
       }
 
-      // ✅ فقط اگر قبلاً join کرده‌ایم leave کن
-      try {
-        if (joinedRef.current) {
-          dlog('echo.leave()', { presence: PRESENCE_NAME });
-          echo.leave(PRESENCE_NAME);
-        } else {
-          dlog('skip leave (not joined)');
-        }
-      } catch (e) {
-        dwarn('echo.leave failed', e);
-      }
-
-      joinedRef.current = false;
-      chRef.current = null;
-      setOnlineUsers([]);
+      leavePresence(echo, 'effect.cleanup');
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReverb, currentUserId]);
+    // ✅ token لازم است چون Echo ممکن است با آن ساخته شود
+  }, [isReverb, token, currentUserId, joinPresence, leavePresence, log, dlog, dwarn]);
 
-  // ✅ لاگ تغییر count (کمک می‌کند نوسان 1↔2 را بفهمیم)
+  // ✅ لاگ تغییر count
   const lastCountRef = useRef(-1);
   useEffect(() => {
     if (!DEBUG) return;
@@ -190,7 +212,7 @@ export function usePresence({ backendKind, token, currentUserId, onGlobalNotific
       lastCountRef.current = c;
       dlog('onlineCount changed', { count: c });
     }
-  }, [onlineUsers]);
+  }, [onlineUsers, dlog]);
 
   return { onlineUsers };
 }

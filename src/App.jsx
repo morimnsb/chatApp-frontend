@@ -104,12 +104,14 @@ function AppShell({ children }) {
 
   const selectedRoomId = useSelector((s) => s.messages?.selectedRoom?.id ?? s.messages?.selectedRoom ?? null);
 
+// ✅ درست
 useUserEvents({
   effectiveKind,
   accessToken: shouldEnableUserEvents ? token : null,
   currentUserId: shouldEnableUserEvents ? currentUserId : null,
   selectedRoomId,
 });
+
 
 
   return (

@@ -2,7 +2,8 @@
 import { useEffect, useRef } from 'react';
 import { useDispatch } from 'react-redux';
 import { wsConnected, wsDisconnected, wsError } from '@/store/wsActions';
-import { getOrCreateEcho, disconnectEcho } from '@/reverb/echo';
+// import { getOrCreateEcho, disconnectEcho } from '@/reverb/echo';
+import { getOrCreateEcho, disconnectEcho } from '@/config/realtime';
 
 const WS_DEBUG_PREFIX = '[ReverbWS]';
 const DEV = import.meta.env.DEV === true;

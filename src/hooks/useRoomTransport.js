@@ -1,7 +1,6 @@
 // chatApp-frontend\src\hooks\useRoomTransport.js
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useDispatch } from 'react-redux';
-import { updateMessages } from '@/actions/messageActions';
 
 const RT_DEBUG = '[RoomTransport]';
 const DEFAULT_TYPING_THROTTLE_MS = 800;
