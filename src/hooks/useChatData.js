@@ -1,5 +1,4 @@
 // src/hooks/useChatData.js
-// src/hooks/useChatData.js
 import { useEffect, useMemo, useRef } from 'react';
 import useFetch from '@/hooks/useFetch';
 import { useDispatch } from 'react-redux';
@@ -14,8 +13,6 @@ import { toErrorMessage } from '@/utils/errors';
 const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 const log = (...a) => DEBUG && console.log('[useChatData]', ...a);
-
-const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
 
 const toArray = (x) => {
   if (Array.isArray(x)) return x;
@@ -39,10 +36,10 @@ export default function useChatData({ endpoints, accessToken }) {
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/json',
       },
+      immediate: true,
     };
   }, [hasToken, accessToken]);
 
-  // ✅ guard: اگر URL یا token نداریم، useFetch بی‌جهت اجرا نشه
   const shouldFetchRooms = Boolean(roomsUrl && fetchConfig);
   const shouldFetchConvos = Boolean(convosUrl && fetchConfig);
 
@@ -51,28 +48,26 @@ export default function useChatData({ endpoints, accessToken }) {
     loading: loadingRooms,
     error: errorRooms,
     retry: retryRoomsRaw,
-  } = useFetch(shouldFetchRooms ? roomsUrl : null, fetchConfig);
+  } = useFetch(shouldFetchRooms ? roomsUrl : null, fetchConfig || { immediate: false });
 
   const {
     data: convosRaw,
     loading: loadingConvos,
     error: errorConvos,
     retry: retryConvosRaw,
-  } = useFetch(shouldFetchConvos ? convosUrl : null, fetchConfig);
+  } = useFetch(shouldFetchConvos ? convosUrl : null, fetchConfig || { immediate: false });
 
-  // ✅ keep last good results so temporary null doesn’t wipe UI
   const lastNonEmptyRef = useRef({ rooms: null, dms: null });
+  const prevMetaRef = useRef({ loading: null, errMsg: null });
 
   const roomsArr = useMemo(() => {
-    if (!roomsRaw) return null; // یعنی هنوز جوابی نداریم
+    if (!roomsRaw) return null;
     return toArray(roomsRaw);
   }, [roomsRaw]);
 
   const dmPartners = useMemo(() => {
     if (!convosRaw) return null;
-    // conversations endpoint shape
     if (Array.isArray(convosRaw?.partners)) return convosRaw.partners;
-    // allow plain array
     if (Array.isArray(convosRaw)) return convosRaw;
     if (Array.isArray(convosRaw?.results)) return convosRaw.results;
     if (Array.isArray(convosRaw?.data)) return convosRaw.data;
@@ -92,39 +87,41 @@ export default function useChatData({ endpoints, accessToken }) {
       });
     }
 
-    // ✅ Rooms -> store.groupMessages (ALL rooms: private + group)
+    // ✅ rooms -> groupMessages
     if (roomsArr !== null) {
-      if (Array.isArray(roomsArr) && roomsArr.length) lastNonEmptyRef.current.rooms = roomsArr;
+      if (roomsArr.length) lastNonEmptyRef.current.rooms = roomsArr;
       dispatch(setGroupMessages(roomsArr));
-    } else if (lastNonEmptyRef.current.rooms) {
-      // optional: نگه‌دار قبلی؛ dispatch نکن که دوباره re-render spam نشه
-      // dispatch(setGroupMessages(lastNonEmptyRef.current.rooms));
     }
 
-    // ✅ Conversations -> store.individualMessages (legacy list)
-    // اگر convos endpoint موجود نیست، این بخش صرفاً آرایه خالی نده که DMها wipe نشن
+    // ✅ dm partners -> individualMessages
     if (dmPartners !== null) {
-      if (Array.isArray(dmPartners) && dmPartners.length) lastNonEmptyRef.current.dms = dmPartners;
+      if (dmPartners.length) lastNonEmptyRef.current.dms = dmPartners;
       dispatch(setIndividualMessages(dmPartners));
-    } else if (lastNonEmptyRef.current.dms) {
-      // optional keep old
-      // dispatch(setIndividualMessages(lastNonEmptyRef.current.dms));
     }
 
-    // ✅ loading + error
-    dispatch(setLoading(Boolean(loadingRooms || loadingConvos)));
+    // ✅ loading (avoid spam dispatch)
+    const nextLoading = Boolean(loadingRooms || loadingConvos);
+    if (prevMetaRef.current.loading !== nextLoading) {
+      prevMetaRef.current.loading = nextLoading;
+      dispatch(setLoading(nextLoading));
+    }
 
+    // ✅ error (avoid spam dispatch)
     const err = errorRooms || errorConvos;
-    if (err) {
-      dispatch(
-        setError({
-          type: 'messages',
-          errorType: 'network',
-          message: toErrorMessage(err),
-        }),
-      );
-    } else {
-      dispatch(setError(null));
+    const msg = err ? toErrorMessage(err) : null;
+    if (prevMetaRef.current.errMsg !== msg) {
+      prevMetaRef.current.errMsg = msg;
+      if (err) {
+        dispatch(
+          setError({
+            type: 'messages',
+            errorType: 'network',
+            message: msg,
+          }),
+        );
+      } else {
+        dispatch(setError(null));
+      }
     }
   }, [
     dispatch,
@@ -143,23 +140,19 @@ export default function useChatData({ endpoints, accessToken }) {
     errorConvos,
   ]);
 
-  // ✅ safe retry wrappers (اگر url/token نبود، crash نکنه)
   const retryRooms = useMemo(() => {
     return () => {
-      if (!shouldFetchRooms) return log('retryRooms skipped (no url/token)');
+      if (!shouldFetchRooms) return DEBUG && log('retryRooms skipped (no url/token)');
       retryRoomsRaw?.();
     };
   }, [shouldFetchRooms, retryRoomsRaw]);
 
   const retryConvos = useMemo(() => {
     return () => {
-      if (!shouldFetchConvos) return log('retryConvos skipped (no url/token)');
+      if (!shouldFetchConvos) return DEBUG && log('retryConvos skipped (no url/token)');
       retryConvosRaw?.();
     };
   }, [shouldFetchConvos, retryConvosRaw]);
 
-  return {
-    retryRooms,
-    retryConvos,
-  };
+  return { retryRooms, retryConvos };
 }

@@ -25,7 +25,6 @@ import { useChatLists } from '@/hooks/chat/useChatLists';
 import useEvent from '@/hooks/useEvent';
 import './HomeChat.css';
 
-// ✅ debug is opt-in via env to avoid spam
 const DEBUG_CHAT =
   import.meta.env.DEV === true &&
   String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
@@ -94,15 +93,14 @@ export default function HomeChat() {
 
   // lists
   const { dmList, groupList, typingIndicators, loading, error } = useChatLists({
-  searchQuery: q,
-  currentUserId, // ✅ from useAuthBasics()
-});
+    searchQuery: q,
+    currentUserId,
+  });
 
+  // ✅ useChatData خودش fetch می‌کند (دیگر اینجا retry خودکار نمی‌زنیم)
+  const { retryRooms, retryConvos } = useChatData({ endpoints, accessToken: bareToken });
 
-  // rooms/data
-  const { retryRooms } = useChatData({ endpoints, accessToken: bareToken });
-
-  // ✅ store debug: confirms whether reducer is under state.messages
+  // ✅ store debug
   const roomsMapDebug = useSelector((s) => s?.messages?.groupMessages);
   useEffect(() => {
     if (!DEBUG_CHAT) return;
@@ -112,60 +110,15 @@ export default function HomeChat() {
     });
   }, [roomsMapDebug]);
 
-  // ✅ IMPORTANT: run when token + endpoints are READY (NOT [] once)
-  useEffect(() => {
-    if (!endpoints?.rooms) return;
-    if (!bareToken) return;
-
-    console.log('[HomeChat] FORCE rooms debug', {
-      roomsUrl: endpoints.rooms,
-      hasToken: Boolean(bareToken),
-      tokenPreview: (bareToken || '').slice(0, 18) + '...',
-      retryRoomsType: typeof retryRooms,
-    });
-
-    if (typeof retryRooms === 'function') {
-      console.log('[HomeChat] calling retryRooms()...');
-      retryRooms();
-    } else {
-      console.warn('[HomeChat] retryRooms is NOT a function -> will do direct fetch test');
-    }
-
-    // ✅ direct fetch test (always matches backend truth)
-    (async () => {
-      try {
-        const res = await fetch(endpoints.rooms, {
-          headers: {
-            Authorization: `Bearer ${bareToken}`,
-            Accept: 'application/json',
-          },
-        });
-
-        const text = await res.text();
-
-        console.log('[HomeChat] DIRECT rooms fetch result', {
-          ok: res.ok,
-          status: res.status,
-          contentType: res.headers.get('content-type'),
-          preview: (text || '').slice(0, 220),
-        });
-      } catch (e) {
-        console.error('[HomeChat] DIRECT rooms fetch exception', e);
-      }
-    })();
-  }, [endpoints?.rooms, bareToken, retryRooms]);
-
-  // users query ✅
+  // users query
   const { usersQ, filteredUsers, handleFriendshipRequest, handleRespondFriendRequest } =
     useUsersQuery({ bareToken, searchQuery: q, retryRooms });
 
-  // global notif handler (stable)
   const onGlobalNotif = useGlobalNotify({
     selectedRoom: roomId,
     setSelectedRoom: (id) => ui({ type: 'SELECT_ROOM', roomId: id }),
   });
 
-  // presence
   const { onlineUsers, connState } = usePresence({
     backendKind: effectiveKind,
     token: bareToken,
@@ -173,7 +126,6 @@ export default function HomeChat() {
     onGlobalNotification: onGlobalNotif,
   });
 
-  // ✅ Set از آنلاین‌ها
   const onlineIdSet = useMemo(() => {
     const set = new Set();
     (Array.isArray(onlineUsers) ? onlineUsers : []).forEach((u) => {
@@ -183,7 +135,6 @@ export default function HomeChat() {
     return set;
   }, [onlineUsers]);
 
-  // ✅ dmList را enrich کن با is_online
   const dmListWithPresence = useMemo(() => {
     const list = Array.isArray(dmList) ? dmList : [];
     return list.map((convo) => {
@@ -193,7 +144,6 @@ export default function HomeChat() {
     });
   }, [dmList, onlineIdSet]);
 
-  // --- handlers ---
   const onSelectChat = useEvent((nextRoomId, receiverId) => {
     ui({ type: 'SELECT_ROOM', roomId: nextRoomId });
     dispatch(selectRoom(nextRoomId));
@@ -202,6 +152,7 @@ export default function HomeChat() {
 
   const onRetryAll = useEvent(() => {
     retryRooms?.();
+    retryConvos?.();
     usersQ.refetch?.();
   });
 
@@ -231,6 +182,8 @@ export default function HomeChat() {
       qLen: (q || '').length,
       currentUserId,
       hasToken: Boolean(bareToken),
+      roomsUrl: endpoints?.rooms,
+      convosUrl: endpoints?.convos,
     };
     const sig = stableJson(payload);
 
@@ -238,7 +191,7 @@ export default function HomeChat() {
       prevRef.current.state = sig;
       console.log('[HomeChat] state signature', payload);
     }
-  }, [effectiveKind, roomId, q, currentUserId, bareToken]);
+  }, [effectiveKind, roomId, q, currentUserId, bareToken, endpoints]);
 
   useEffect(() => {
     if (!DEBUG_CHAT) return;

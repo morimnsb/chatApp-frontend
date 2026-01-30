@@ -5,51 +5,71 @@ const ABSOLUTE_RE = /^(?:https?:)?\/\//i;
 const isAbsoluteUrl = (u) => ABSOLUTE_RE.test(String(u || ''));
 
 function buildFullUrl(config) {
-  const base = String(config.baseURL || '').replace(/\/+$/, '');
-  const url = String(config.url || '');
+  const base = String(config?.baseURL || '').replace(/\/+$/, '');
+  const url = String(config?.url || '');
 
-  // اگر absolute است، همون رو برگردون
   if (isAbsoluteUrl(url)) return url;
 
-  // اگر relative است، با baseURL join کن
   const path = url.replace(/^\/+/, '');
   return base ? `${base}/${path}` : `/${path}`;
 }
 
+const DEV = import.meta.env.DEV === true;
+const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+
 const apiClient = axios.create({
-  baseURL: 'http://127.0.0.1:8000', // یا localhost فرقی نداره
+  baseURL: import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000',
   headers: { 'Content-Type': 'application/json' },
   withCredentials: false,
 });
 
+const isCanceled = (err) =>
+  err?.code === 'ERR_CANCELED' ||
+  err?.name === 'CanceledError' ||
+  err?.message === 'canceled' ||
+  axios.isCancel?.(err) === true;
+
 apiClient.interceptors.request.use(
   (config) => {
-    const full = buildFullUrl(config);
-    const hasAuth = Boolean(config.headers?.Authorization);
-
-    console.log('[apiClient] ->', {
-      method: (config.method || 'get').toLowerCase(),
-      url: full,
-      hasAuth,
-    });
-
-    // ✅ خیلی مهم: هیچ تغییری روی config.url نده
+    if (DEBUG) {
+      console.log('[apiClient] ->', {
+        method: (config.method || 'get').toUpperCase(),
+        url: buildFullUrl(config),
+        hasAuth: Boolean(config.headers?.Authorization),
+      });
+    }
     return config;
   },
-  (err) => Promise.reject(err),
+  (err) => {
+    if (!isCanceled(err)) {
+      console.log('[apiClient] request error', {
+        message: err?.message,
+        code: err?.code,
+      });
+    }
+    return Promise.reject(err);
+  },
 );
 
 apiClient.interceptors.response.use(
   (res) => {
-    console.log('[apiClient] <-', { status: res.status, url: buildFullUrl(res.config) });
+    if (DEBUG) {
+      console.log('[apiClient] <-', { status: res.status, url: buildFullUrl(res.config) });
+    }
     return res;
   },
   (err) => {
+    // ✅ canceled = طبیعی (cleanup/StrictMode/retry) → اسپم نکن
+    if (isCanceled(err)) return Promise.reject(err);
+
     console.log('[apiClient] xx', {
+      message: err?.message,
+      code: err?.code,
       status: err?.response?.status,
       url: buildFullUrl(err?.config || {}),
       data: err?.response?.data,
     });
+
     return Promise.reject(err);
   },
 );
