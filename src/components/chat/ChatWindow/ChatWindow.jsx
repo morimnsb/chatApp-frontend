@@ -1,576 +1,391 @@
-import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Form, Button, Spinner, Alert } from 'react-bootstrap';
-import { useDispatch } from 'react-redux';
+// src/components/ConversationList.jsx
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import { ListGroup, Button, Spinner } from 'react-bootstrap';
+import axios from 'axios';
+import { useSelector } from 'react-redux';
+import { toast } from 'react-toastify';
 
-import { updateMessages, resetTypingIndicator } from '@/actions/messageActions';
+import { formatTime } from '@/utils/formatTime';
+import profilephoto1 from '@/assets/images/message/profilephoto1.png';
+import './ConversationList.css';
 
-import { buildWsUrlForDjango } from '@/utils/wsUrl';
-import useChatWebSocket from '@/hooks/useChatWebSocket';
-import useRoomMessages from '@/hooks/useRoomMessages';
-import useDesktopNotify from '@/hooks/useDesktopNotify';
-import useTitleBadge from '@/hooks/useTitleBadge';
-import useTypingEcho from '@/hooks/useTypingEcho';
-
-import ChatMessagesList from '@/ChatMessagesList';
-import TypingIndicator from '@/TypingIndicator';
-
-// ---------- debug flags ----------
 const DEV = import.meta.env.DEV === true;
-const DEBUG_CHAT = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+const log = (...a) => DEBUG && console.log('[ConversationList]', ...a);
 
-// ---------- helpers ----------
-const coerceId = (v) => (v == null ? null : Number(v) || String(v));
-
-const normPacket = (packet) => {
-  if (!packet) return null;
-  if (packet.type === 'message' && !packet.message && packet.data) {
-    return { ...packet, message: packet.data };
-  }
-  return packet;
+const safeArr = (v) => (Array.isArray(v) ? v : []);
+const clip = (s, n = 38) => {
+  const t = String(s || '').trim();
+  if (!t) return '';
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 
-// ✅ key: handle both room_id and chat_room_id
-const getRoomIdFromMsg = (m) =>
-  coerceId(m?.room_id ?? m?.chat_room_id ?? m?.roomId ?? m?.room?.id ?? null);
-
-const msgKey = (m) => {
-  const mid = coerceId(m?.id);
-  const rid = getRoomIdFromMsg(m);
-  return `${mid}|${rid}`;
+const coerceNum = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 };
 
-const getSenderIdFromMsg = (m) =>
-  coerceId(m?.sender_id ?? m?.user_id ?? m?.sender?.id ?? m?.user?.id ?? null);
+// ✅ selectors (این‌ها را اگر نام state شما فرق دارد، فقط اینجا تغییر بده)
+const selectByRoom = (state) =>
+  state?.messages?.byRoom || state?.message?.byRoom || state?.messageSlice?.byRoom || {};
 
-const previewMsg = (m) => {
-  if (!m) return null;
-  return {
-    id: coerceId(m.id),
-    room: getRoomIdFromMsg(m),
-    sender: getSenderIdFromMsg(m),
-    content: String(m?.content ?? '').slice(0, 60),
-    created_at: m?.created_at ?? m?.createdAt ?? null,
-    keys: Object.keys(m || {}).slice(0, 12),
-  };
-};
+const selectDmRooms = (state) =>
+  state?.messages?.rooms?.individual ||
+  state?.messages?.dmRooms ||
+  state?.message?.rooms?.individual ||
+  [];
 
-// throttle ساده برای typing (هر 700ms یکبار)
-function useThrottleMs(ms = 700) {
-  const lastRef = useRef(0);
-  return useCallback(() => {
-    const now = Date.now();
-    if (now - lastRef.current < ms) return false;
-    lastRef.current = now;
-    return true;
-  }, [ms]);
-}
+const selectGroupRooms = (state) =>
+  state?.messages?.rooms?.groups ||
+  state?.messages?.groupRooms ||
+  state?.message?.rooms?.groups ||
+  [];
 
-export default function ChatWindow({
-  roomId,
-  endpoints,
-  effectiveKind,
-  accessToken,     // ✅ از بیرون
-  currentUserId,   // ✅ از بیرون
+export default function ConversationList({
+  currentUser,
+  handleSelectChat,
+  selectedRoom,
+  typingIndicators = {},
+  onRespondFriendRequest,
 }) {
-  const dispatch = useDispatch();
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
 
-  const kind = String(effectiveKind || '').toLowerCase();
-  const IS_DJANGO = kind === 'django';
-  const IS_REVERB = kind === 'reverb';
+  const byRoom = useSelector(selectByRoom);
+  const dmRoomsRaw = useSelector(selectDmRooms);
+  const groupRoomsRaw = useSelector(selectGroupRooms);
 
-  const [messageInput, setMessageInput] = useState('');
-  const [uiError, setUiError] = useState(null);
-  const [typingUserId, setTypingUserId] = useState(null);
-  const [connectionStatus, setConnectionStatus] = useState('—');
+  const individualMessages = useMemo(() => safeArr(dmRoomsRaw), [dmRoomsRaw]);
+  const groupMessages = useMemo(() => safeArr(groupRoomsRaw), [groupRoomsRaw]);
 
-  const sendJsonMessageRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
-      const messagesRef = useRef(null);
-
-  // ✅ debug trace refs
-  const traceRef = useRef({
-    roomId: null,
-    lastLen: 0,
-    lastKey: null,
-    lastPktType: null,
-    lastPktAt: 0,
-    lastMsgPreview: null,
-    dedupHits: 0,
-    added: 0,
-    updated: 0,
-    droppedWrongRoom: 0,
-  });
-
-  // dedup per-room (وقتی roomId عوض شود پاک می‌کنیم)
-  const seenRef = useRef(new Set());
-  useEffect(() => {
-    seenRef.current = new Set();
-    traceRef.current = {
-      ...traceRef.current,
-      roomId,
-      lastLen: 0,
-      lastKey: null,
-      lastPktType: null,
-      lastPktAt: Date.now(),
-      lastMsgPreview: null,
-      dedupHits: 0,
-      added: 0,
-      updated: 0,
-      droppedWrongRoom: 0,
-    };
-
-    if (DEBUG_CHAT) {
-      console.log('[ChatWindow] room changed -> reset dedup/trace', { roomId });
-    }
-  }, [roomId]);
-
-  const { messages, setMessages, loading, fetchError } = useRoomMessages(
-    roomId,
-    endpoints,
-    accessToken
+  const renderTypingIndicator = useCallback(
+    (userId) => (typingIndicators?.[userId] ? 'is typing...' : null),
+    [typingIndicators]
   );
 
-  const { show } = useDesktopNotify();
-  const { bump } = useTitleBadge();
+  // ✅ helper: get last message from byRoom for a room
+  const getLastForRoom = useCallback(
+    (roomId) => {
+      const rid = String(roomId);
+      const arr = safeArr(byRoom?.[rid]);
+      return arr.length ? arr[arr.length - 1] : null;
+    },
+    [byRoom]
+  );
 
-  // ✅ log messages changes (track new received)
+  // debug snapshot
+  const prevSig = useRef('');
   useEffect(() => {
-    if (!DEBUG_CHAT) return;
+    if (!DEBUG) return;
 
-    const t = traceRef.current;
-    const len = Array.isArray(messages) ? messages.length : 0;
-    const last = len ? messages[len - 1] : null;
-
-    // فقط وقتی len یا lastKey تغییر کرد لاگ کنیم
-    const lk = last ? msgKey(last) : null;
-    if (len !== t.lastLen || lk !== t.lastKey) {
-      t.lastLen = len;
-      t.lastKey = lk;
-      t.lastMsgPreview = previewMsg(last);
-
-      console.log('[ChatWindow] messages changed', {
+    const sampleDm = individualMessages.slice(0, 2).map((c) => {
+      const roomId = c?.roomId ?? c?.room_id ?? c?.chat_room_id ?? c?.id ?? null;
+      const last = roomId ? getLastForRoom(roomId) : null;
+      return {
         roomId,
-        len,
-        lastKey: lk,
-        lastMsg: t.lastMsgPreview,
-        stats: {
-          added: t.added,
-          updated: t.updated,
-          dedupHits: t.dedupHits,
-          droppedWrongRoom: t.droppedWrongRoom,
+        name: c?.first_name || c?.name,
+        lastText: last?.content || c?.last_message_text || '',
+        lastAt: last?.created_at || c?.last_message_at || null,
+      };
+    });
+
+    const sigObj = {
+      selectedRoom,
+      dmCount: individualMessages.length,
+      groupCount: groupMessages.length,
+      dmSample: sampleDm,
+    };
+
+    const sig = JSON.stringify(sigObj);
+    if (sig !== prevSig.current) {
+      prevSig.current = sig;
+      log('snapshot', sigObj);
+    }
+  }, [DEBUG, selectedRoom, individualMessages, groupMessages, getLastForRoom]);
+
+  const handleCreateGroup = useCallback(async () => {
+    setCreating(true);
+    setCreateError('');
+
+    try {
+      const token = localStorage.getItem('access_token');
+      const body = { name: 'ias: New Group Chat', is_group: true };
+
+      const res = await axios.post('http://localhost:8000/api/rooms', body, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
         },
       });
+
+      log('create group response', res?.data);
+
+      if (res.data?.room?.id) {
+        handleSelectChat(res.data.room.id);
+      }
+    } catch (e) {
+      log('create group error', e);
+      if (e?.response?.data) {
+        setCreateError(
+          typeof e.response.data === 'string'
+            ? e.response.data
+            : JSON.stringify(e.response.data)
+        );
+      } else {
+        setCreateError('Server error while creating group');
+      }
+    } finally {
+      setCreating(false);
     }
-  }, [messages, roomId]);
-
-  // ---------- Packet handler ----------
-  const handlePacket = useCallback(
-    (raw) => {
-      const packet = normPacket(raw);
-      if (!packet?.type) return;
-
-      const t = traceRef.current;
-      t.lastPktType = packet.type;
-      t.lastPktAt = Date.now();
-
-      if (DEBUG_CHAT) {
-        console.log('[ChatWindow] packet', {
-          roomId,
-          type: packet.type,
-          keys: Object.keys(packet || {}),
-          rawPreview: JSON.stringify(packet).slice(0, 180),
-        });
-      }
-
-      switch (packet.type) {
-        case 'message': {
-          const m = packet.message;
-          if (!m) {
-            if (DEBUG_CHAT) console.warn('[ChatWindow] message packet without message field', packet);
-            return;
-          }
-
-          const incomingRoomId = getRoomIdFromMsg(m);
-          const activeRoomId = coerceId(roomId);
-
-          // ✅ اگر پیام برای روم دیگری است، drop کن (یا اگر می‌خوای global نگه داری، این شرط رو بردار)
-          if (activeRoomId != null && incomingRoomId != null && String(incomingRoomId) !== String(activeRoomId)) {
-            t.droppedWrongRoom += 1;
-            if (DEBUG_CHAT) {
-              console.warn('[ChatWindow] DROP message for other room', {
-                activeRoomId,
-                incomingRoomId,
-                msg: previewMsg(m),
-              });
-            }
-
-            // ولی هنوز می‌تونی redux global رو آپدیت کنی
-            dispatch(updateMessages({ type: 'message', message: m }));
-            return;
-          }
-
-          const key = msgKey(m);
-
-          // ✅ dedup + merge
-          if (!seenRef.current.has(key)) {
-            seenRef.current.add(key);
-            t.added += 1;
-
-            if (DEBUG_CHAT) {
-              console.log('[ChatWindow] ADD message', {
-                key,
-                msg: previewMsg(m),
-              });
-            }
-
-            setMessages((prev) => {
-              const arr = Array.isArray(prev) ? prev : [];
-              const idx = arr.findIndex((x) => msgKey(x) === key);
-              if (idx === -1) return [...arr, m];
-
-              // اگر پیدا شد، merge کن
-              const next = arr.slice();
-              next[idx] = { ...next[idx], ...m };
-              t.updated += 1;
-              return next;
-            });
-          } else {
-            t.dedupHits += 1;
-            if (DEBUG_CHAT) {
-              console.log('[ChatWindow] DEDUP hit', { key, msg: previewMsg(m) });
-            }
-          }
-
-          // redux global store update (اگر لازم داری)
-          dispatch(updateMessages({ type: 'message', message: m }));
-
-          const senderId = getSenderIdFromMsg(m);
-          const meId = coerceId(currentUserId);
-
-          const fromOther = senderId != null && meId != null && String(senderId) !== String(meId);
-          const isSystem = String(m?.sender_name || m?.user?.name || '').toLowerCase() === 'system';
-
-          // read receipt (فقط در django ws)
-          if (fromOther && IS_DJANGO) {
-            try {
-              sendJsonMessageRef.current?.({
-                type: 'read_receipt_confirmation',
-                message_id: m.id,
-              });
-              if (DEBUG_CHAT) console.log('[ChatWindow] sent read_receipt_confirmation', { message_id: m.id });
-            } catch (e) {
-              if (DEBUG_CHAT) console.warn('[ChatWindow] read_receipt_confirmation failed', e);
-            }
-          }
-
-          if (fromOther && !isSystem) {
-            try {
-              show(m.sender_name || m?.user?.name || 'پیام جدید', m.content || '', { always: true });
-              bump();
-              if (DEBUG_CHAT) console.log('[ChatWindow] notify+bump', { fromOther, senderId, meId });
-            } catch (e) {
-              if (DEBUG_CHAT) console.warn('[ChatWindow] notify failed', e);
-            }
-          }
-          break;
-        }
-
-        case 'typing_indicator': {
-          const uid = packet.user_id;
-          if (!uid) return;
-
-          if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-          setTypingUserId(uid);
-
-          if (DEBUG_CHAT) console.log('[ChatWindow] typing_indicator', { uid });
-
-          typingTimeoutRef.current = setTimeout(() => {
-            dispatch(resetTypingIndicator(uid));
-            setTypingUserId(null);
-            if (DEBUG_CHAT) console.log('[ChatWindow] typing cleared', { uid });
-          }, 3500);
-          break;
-        }
-
-        case 'message_received': {
-          const mid = coerceId(packet.message);
-          if (DEBUG_CHAT) console.log('[ChatWindow] message_received', { mid });
-
-          setMessages((prev) => {
-            const arr = Array.isArray(prev) ? prev : [];
-            return arr.map((x) => (coerceId(x.id) === mid ? { ...x, read_receipt: true } : x));
-          });
-          break;
-        }
-
-        case 'message_updated': {
-          const m = packet.message;
-          if (!m) return;
-
-          const key = msgKey(m);
-          if (DEBUG_CHAT) console.log('[ChatWindow] message_updated', { key, msg: previewMsg(m) });
-
-          setMessages((prev) => {
-            const arr = Array.isArray(prev) ? prev : [];
-            const idx = arr.findIndex((x) => msgKey(x) === key);
-            if (idx === -1) return arr;
-            const next = arr.slice();
-            next[idx] = { ...next[idx], ...m };
-            traceRef.current.updated += 1;
-            return next;
-          });
-          break;
-        }
-
-        case 'message_deleted': {
-          const mid = coerceId(packet.message);
-          if (DEBUG_CHAT) console.log('[ChatWindow] message_deleted', { mid });
-
-          setMessages((prev) => {
-            const arr = Array.isArray(prev) ? prev : [];
-            return arr.filter((x) => coerceId(x.id) !== mid);
-          });
-          break;
-        }
-
-        default:
-          if (DEBUG_CHAT) console.log('[ChatWindow] unhandled packet type', packet.type);
-          break;
-      }
-    },
-    [dispatch, currentUserId, IS_DJANGO, setMessages, show, bump, roomId]
-  );
-
-  // ---------- Reverb typing/messages ----------
-  const { emitTyping } = useTypingEcho({
-    enabled: IS_REVERB && Boolean(accessToken) && Boolean(roomId),
-    accessToken,
-    roomId,
-    onPacket: handlePacket,
-    onTypingChange: (uidOrNull) => setTypingUserId(uidOrNull),
-  });
-
-  // ---------- Django WS ----------
-  const socketUrl = useMemo(() => {
-    if (!IS_DJANGO || !roomId || !accessToken) return null;
-    return buildWsUrlForDjango(roomId, accessToken);
-  }, [IS_DJANGO, roomId, accessToken]);
-
-  const { sendJsonMessage, readyState } = useChatWebSocket(socketUrl, handlePacket);
-
-  useEffect(() => {
-    sendJsonMessageRef.current = sendJsonMessage;
-  }, [sendJsonMessage]);
-
-  useEffect(() => {
-    if (IS_DJANGO) {
-      const status =
-        readyState === 0 ? 'Connecting…' :
-        readyState === 1 ? 'Connected' :
-        readyState === 2 ? 'Disconnecting…' :
-        readyState === 3 ? 'Disconnected' : '—';
-      setConnectionStatus(status);
-    } else if (IS_REVERB) {
-      setConnectionStatus('Reverb/Echo');
-    } else {
-      setConnectionStatus('—');
-    }
-  }, [IS_DJANGO, IS_REVERB, readyState]);
-
-  useEffect(() => {
-    if (fetchError) setUiError('Error fetching messages. Please try again.');
-  }, [fetchError]);
-
-  useEffect(() => {
-    return () => {
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    };
-  }, []);
-
-  // ---------- send message (Optimistic UI) ----------
-  const handleSendMessage = useCallback(
-    async (e) => {
-      e.preventDefault();
-      const text = messageInput.trim();
-      if (!text) {
-        setUiError('Message cannot be empty');
-        return;
-      }
-      if (!accessToken) {
-        setUiError('Missing access token');
-        return;
-      }
-
-      setUiError(null);
-
-      const tempId = `tmp-${Date.now()}`;
-      const optimistic = {
-        id: tempId,
-        room_id: roomId,
-        content: text,
-        sender_id: currentUserId || null,
-        created_at: new Date().toISOString(),
-        read_receipt: false,
-        _optimistic: true,
-      };
-
-      if (DEBUG_CHAT) {
-        console.log('[ChatWindow] SEND optimistic', { roomId, optimistic: previewMsg(optimistic) });
-      }
-
-      setMessages((prev) => {
-        const arr = Array.isArray(prev) ? prev : [];
-        return [...arr, optimistic];
-      });
-      setMessageInput('');
-
-      // Django: WS
-      if (IS_DJANGO) {
-        if (readyState !== 1) {
-          setUiError('WebSocket connection is not open.');
-          return;
-        }
-        try {
-          sendJsonMessageRef.current?.({ type: 'chat_message', content: text });
-          if (DEBUG_CHAT) console.log('[ChatWindow] WS send ok');
-          return;
-        } catch (err) {
-          setUiError(err?.message || 'WS send failed');
-          if (DEBUG_CHAT) console.warn('[ChatWindow] WS send failed', err);
-          return;
-        }
-      }
-
-      // Reverb: HTTP POST
-      try {
-        const url = endpoints?.roomMessages ? endpoints.roomMessages(roomId) : null;
-        if (!url) throw new Error('roomMessages endpoint is missing');
-
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ content: text }),
-        });
-
-        if (!resp.ok) {
-          const errBody = await resp.json().catch(() => ({}));
-          throw new Error(errBody?.error || `POST message ${resp.status}`);
-        }
-
-        const saved = await resp.json().catch(() => ({}));
-        if (DEBUG_CHAT) console.log('[ChatWindow] POST saved', saved);
-
-        if (saved?.id) {
-          setMessages((prev) => {
-            const arr = Array.isArray(prev) ? prev : [];
-            return arr.map((m) => (m.id === tempId ? { ...saved, _optimistic: false } : m));
-          });
-        } else {
-          setMessages((prev) => {
-            const arr = Array.isArray(prev) ? prev : [];
-            return arr.map((m) => (m.id === tempId ? { ...m, _optimistic: false } : m));
-          });
-        }
-      } catch (err) {
-        setMessages((prev) => {
-          const arr = Array.isArray(prev) ? prev : [];
-          return arr.map((m) => (m.id === tempId ? { ...m, _failed: true } : m));
-        });
-        setUiError(err?.message || 'Failed to send message');
-        if (DEBUG_CHAT) console.warn('[ChatWindow] POST send failed', err);
-      }
-    },
-    [
-      IS_DJANGO,
-      messageInput,
-      roomId,
-      endpoints,
-      accessToken,
-      currentUserId,
-      readyState,
-      setMessages,
-    ]
-  );
-
-  // ---------- typing (throttled) ----------
-  const canEmitTyping = useThrottleMs(700);
-
-  const handleInputChange = useCallback(
-    (e) => {
-      const val = e.target.value;
-      setMessageInput(val);
-
-      if (!currentUserId) return;
-      if (!val.trim()) return;
-      if (!canEmitTyping()) return;
-
-      if (IS_DJANGO) {
-        sendJsonMessageRef.current?.({
-          type: 'typing_indicator',
-          sender_id: currentUserId,
-        });
-        if (DEBUG_CHAT) console.log('[ChatWindow] typing emit (django)', { currentUserId });
-      } else if (IS_REVERB) {
-        emitTyping(currentUserId);
-        if (DEBUG_CHAT) console.log('[ChatWindow] typing emit (reverb)', { currentUserId });
-      }
-    },
-    [currentUserId, IS_DJANGO, IS_REVERB, emitTyping, canEmitTyping]
-  );
-
-  if (!roomId) {
-    return <div className="no-chat-selected">Select a chat to start messaging</div>;
-  }
+  }, [handleSelectChat]);
 
   return (
-    <div className="chat-window">
-      {loading && (
-        <div className="loading-spinner">
-          <Spinner animation="border" />
-        </div>
+    <ListGroup className="message-list-wrapper">
+      {/* ----------------- INDIVIDUAL ----------------- */}
+      <ListGroup.Item disabled className="list-group-header">
+        INDIVIDUAL MESSAGES
+      </ListGroup.Item>
+
+      {individualMessages.length > 0 ? (
+        individualMessages.map((convo) => {
+          const roomId =
+            convo?.roomId ?? convo?.room_id ?? convo?.chat_room_id ?? convo?.id ?? null;
+
+          const userId =
+            convo?.partnerId ?? convo?.partner_id ?? convo?.user_id ?? null;
+
+          const last = roomId ? getLastForRoom(roomId) : null;
+
+          const lastMsgText =
+            last?.content ||
+            convo?.last_message_text ||
+            convo?.last_message?.content ||
+            '';
+
+          const lastTime =
+            last?.created_at ||
+            convo?.last_message_at ||
+            convo?.last_message?.created_at ||
+            null;
+
+          const displayName =
+            convo?.first_name ||
+            convo?.firstName ||
+            convo?.name ||
+            convo?.email ||
+            `User #${userId ?? ''}`;
+
+          const avatar = convo?.photo || convo?.avatar || profilephoto1;
+          const isActive = Number(selectedRoom) === Number(roomId);
+
+          const friendshipStatus = convo?.friendship_status;
+          const friendshipId = convo?.friendship_id;
+
+          const isFriendReqIncoming = friendshipStatus === 'pending_incoming';
+          const isFriendReqOutgoing = friendshipStatus === 'pending_outgoing';
+
+          const isSelf =
+            currentUser?.id && userId != null && Number(currentUser.id) === Number(userId);
+
+          let subtitle = '';
+          if (isFriendReqIncoming) subtitle = 'sent you a friend request';
+          else if (isFriendReqOutgoing) subtitle = 'Friend request sent';
+          else subtitle = clip(lastMsgText, 60);
+
+          const inlinePreview =
+            !isFriendReqIncoming && !isFriendReqOutgoing ? clip(lastMsgText, 28) : '';
+
+          return (
+            <ListGroup.Item
+              key={`dm-${String(roomId ?? userId ?? displayName)}`} // ✅ stable
+              className={`message-list-item p-0 ${isActive ? 'active' : ''}`}
+            >
+              <div
+                role="button"
+                tabIndex={0}
+                className="message-row w-100"
+                style={{ cursor: 'pointer' }}
+                onClick={() => handleSelectChat(roomId, userId)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSelectChat(roomId, userId);
+                }}
+              >
+                <div className="message-content">
+                  <img
+                    src={avatar}
+                    alt={displayName}
+                    className={`profile-img ${convo?.is_online ? 'is-online' : 'is-offline'}`}
+                  />
+                </div>
+
+                <div className="message-body">
+                  <div className="message-header">
+                    <span className="user-name">
+                      {displayName}{' '}
+                      {isSelf && (
+                        <span className="text-muted" style={{ fontSize: 11 }}>
+                          (you)
+                        </span>
+                      )}
+
+                      {inlinePreview ? (
+                        <span className="text-muted" style={{ fontSize: 12, marginLeft: 8 }}>
+                          · {inlinePreview}
+                        </span>
+                      ) : null}
+                    </span>
+
+                    <span className="time-text">{lastTime ? formatTime(lastTime) : ''}</span>
+                  </div>
+
+                  <div className="message-details">
+                    {isFriendReqIncoming && friendshipId ? (
+                      <div className="d-flex align-items-center gap-2 w-100">
+                        <span className="subtext">{subtitle}</span>
+
+                        {onRespondFriendRequest && (
+                          <div className="d-flex gap-1 ms-auto">
+                            <Button
+                              variant="success"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onRespondFriendRequest({ friendshipId, action: 'accept' });
+                              }}
+                            >
+                              Accept
+                            </Button>
+
+                            <Button
+                              variant="outline-danger"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onRespondFriendRequest({ friendshipId, action: 'reject' });
+                              }}
+                            >
+                              Decline
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        {renderTypingIndicator(userId) ? (
+                          <span className="subtext">{renderTypingIndicator(userId)}</span>
+                        ) : (
+                          <span className="subtext">{subtitle}</span>
+                        )}
+
+                        {Number(convo?.unread_count || 0) > 0 && (
+                          <span className="unread_count">{convo.unread_count}</span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </ListGroup.Item>
+          );
+        })
+      ) : (
+        <ListGroup.Item className="no-messages">No individual messages available</ListGroup.Item>
       )}
 
-      {uiError && <Alert variant="danger">{uiError}</Alert>}
+      {/* ----------------- GROUP HEADER + BUTTON ----------------- */}
+      <ListGroup.Item className="list-group-header group-header-row">
+        <span>GROUP MESSAGES</span>
 
-      <div className="connection-status">{connectionStatus}</div>
-
-      {/* ✅ optional overlay debug */}
-      {DEBUG_CHAT && (
-        <div style={{ padding: '6px 10px', fontSize: 12, opacity: 0.85, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-          <div>roomId: {String(roomId)} | kind: {kind}</div>
-          <div>
-            msgs: {Array.isArray(messages) ? messages.length : 0} | me: {String(currentUserId ?? 'null')}
-          </div>
-        </div>
-      )}
-
-
-<ChatMessagesList
-  messages={messages}
-  currentUserId={currentUserId}
-  containerRef={messagesRef}
-/>
-
-      <TypingIndicator typing={typingUserId} />
-
-      <Form onSubmit={handleSendMessage} className="chat-input-form">
-        <Form.Group controlId="messageInput">
-          <Form.Control
-            type="text"
-            placeholder="Type a message..."
-            value={messageInput}
-            onChange={handleInputChange}
-            autoComplete="off"
-          />
-        </Form.Group>
-
-        <Button type="submit" variant="primary" disabled={!messageInput.trim()}>
-          Send
+        <Button
+          variant="primary"
+          size="sm"
+          className="new-group-btn"
+          onClick={handleCreateGroup}
+          disabled={creating}
+        >
+          {creating ? (
+            <>
+              <Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" />{' '}
+              Creating...
+            </>
+          ) : (
+            '+ New Group'
+          )}
         </Button>
-      </Form>
-    </div>
+      </ListGroup.Item>
+
+      {createError && (
+        <ListGroup.Item className="create-error">
+          <span style={{ color: 'red', fontSize: '0.8rem' }}>{createError}</span>
+        </ListGroup.Item>
+      )}
+
+      {/* ----------------- GROUP LIST ----------------- */}
+      {groupMessages.length > 0 ? (
+        groupMessages.map((room) => {
+          const roomId = room?.id ?? null;
+          const last = roomId ? getLastForRoom(roomId) : null;
+
+          const lastMsgText =
+            last?.content || room?.last_message_text || room?.last_message?.content || '';
+
+          const lastTime =
+            last?.created_at || room?.last_message_at || room?.last_message?.created_at || null;
+
+          const name = room?.name || room?.title || room?.room_name || `Room #${roomId}`;
+          const isActive = Number(selectedRoom) === Number(roomId);
+
+          const inlinePreview = clip(lastMsgText, 28);
+
+          return (
+            <ListGroup.Item
+              key={`group-${String(roomId ?? name)}`}
+              className={`message-list-item p-0 ${isActive ? 'active' : ''}`}
+            >
+              <div
+                role="button"
+                tabIndex={0}
+                className="message-row w-100"
+                style={{ cursor: 'pointer' }}
+                onClick={() => handleSelectChat(roomId)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSelectChat(roomId);
+                }}
+              >
+                <div className="message-content">
+                  <img src={room?.photo || profilephoto1} alt={name} className="profile-img" />
+                </div>
+
+                <div className="message-body">
+                  <div className="message-header">
+                    <span className="room-name">
+                      {name}
+                      {inlinePreview ? (
+                        <span className="text-muted" style={{ fontSize: 12, marginLeft: 8 }}>
+                          · {inlinePreview}
+                        </span>
+                      ) : null}
+                    </span>
+
+                    <span className="time-text">{lastTime ? formatTime(lastTime) : ''}</span>
+                  </div>
+
+                  <div className="message-details">
+                    <span className="subtext">{clip(lastMsgText, 60)}</span>
+
+                    {Number(room?.unread_count || 0) > 0 && (
+                      <span className="unread_count">{room.unread_count}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </ListGroup.Item>
+          );
+        })
+      ) : (
+        <ListGroup.Item className="no-messages">No group messages available</ListGroup.Item>
+      )}
+    </ListGroup>
   );
 }

@@ -12,6 +12,9 @@ import { meThunk, selectBootstrapped } from '@/store/authSlice';
 
 import useUserEvents from '@/hooks/useUserEvents';
 
+// ✅ NEW: global notify hook
+import { useGlobalNotify } from '@/hooks/chat/useGlobalNotify';
+
 // lazy pages
 const Register = React.lazy(() => import('@/components/RegisterForm/RegisterForm'));
 const VerifyEmail = React.lazy(() => import('@/components/VerifyEmail/VerifyEmail'));
@@ -22,14 +25,7 @@ const ChangePasswordForm = React.lazy(() => import('@/components/auth/ChangePass
 
 function Splash() {
   return (
-    <div
-      style={{
-        minHeight: '100dvh',
-        display: 'grid',
-        placeItems: 'center',
-        fontFamily: 'system-ui',
-      }}
-    >
+    <div style={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', fontFamily: 'system-ui' }}>
       Loading might takes a few times
     </div>
   );
@@ -55,9 +51,7 @@ function RootRouter() {
   const dispatch = useDispatch();
   const bootstrapped = useSelector(selectBootstrapped);
 
-  // جلوگیری از دوبار dispatch در React 18 StrictMode (DEV)
   const didInitRef = useRef(false);
-
   useEffect(() => {
     if (didInitRef.current) return;
     didInitRef.current = true;
@@ -70,20 +64,17 @@ function RootRouter() {
     <BrowserRouter>
       <React.Suspense fallback={<Splash />}>
         <Routes>
-          {/* public */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<Register />} />
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/forgot-password" element={<ForgotPasswordForm />} />
           <Route path="/reset-password" element={<ResetPasswordForm />} />
 
-          {/* protected */}
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<HomeChat />} />
             <Route path="/change-password" element={<ChangePasswordForm />} />
           </Route>
 
-          {/* fallback */}
           <Route path="*" element={<SmartFallback />} />
         </Routes>
       </React.Suspense>
@@ -96,23 +87,26 @@ function AppShell({ children }) {
   const token = useSelector(selectToken);
   const currentUserId = useSelector(selectCurrentUserId);
 
-  // اگر BackendPicker داری، بعداً از store بگیر
   const effectiveKind = useMemo(() => 'reverb', []);
 
-  // فقط وقتی آماده‌ایم هوک رو فعال کن
   const shouldEnableUserEvents = Boolean(bootstrapped && token && currentUserId);
 
-  const selectedRoomId = useSelector((s) => s.messages?.selectedRoom?.id ?? s.messages?.selectedRoom ?? null);
+  // ✅ selectedRoomId برای جلوگیری از toast وقتی روم فعاله
+  const selectedRoomId = useSelector(
+    (s) => s.messages?.selectedRoom?.id ?? s.messages?.selectedRoom ?? null
+  );
 
-// ✅ درست
-useUserEvents({
-  effectiveKind,
-  accessToken: shouldEnableUserEvents ? token : null,
-  currentUserId: shouldEnableUserEvents ? currentUserId : null,
-  selectedRoomId,
-});
+  // ✅ این handler تنها جاییه که ConversationList رو آپدیت می‌کنه
+  const handleGlobalNotify = useGlobalNotify({ selectedRoom: selectedRoomId });
 
-
+  // ✅ useUserEvents فقط گوش میده و payload رو میده به global notify
+  useUserEvents({
+    effectiveKind,
+    accessToken: shouldEnableUserEvents ? token : null,
+    currentUserId: shouldEnableUserEvents ? currentUserId : null,
+    selectedRoomId,
+    onNotify: handleGlobalNotify, // ✅ مهم
+  });
 
   return (
     <>

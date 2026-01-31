@@ -885,3 +885,7 @@ html, body, #root { height: 100%; }
 /* اگر کلاس‌های چپ/راست داری */
 .message-bubble--me { margin-left: auto; }
 .message-bubble--other { margin-right: auto; }
+.messages--limited{
+  max-height: 260px;
+  overflow-y: auto;
+}

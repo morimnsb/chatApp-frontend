@@ -1,8 +1,5 @@
 // src/hooks/useUserEvents.js
 import { useEffect, useRef } from 'react';
-import { useDispatch } from 'react-redux';
-import { updateMessages } from '@/actions/messageActions';
-import { toast } from 'react-toastify';
 import { getOrCreateEcho } from '@/config/realtime';
 
 const DEV = import.meta.env.DEV === true;
@@ -11,21 +8,29 @@ const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 const log = (...a) => console.log('[UserEvents]', ...a);
 const dlog = (...a) => DEBUG && console.log('[UserEvents][DBG]', ...a);
 
-const EVENTS = ['.direct.message'];
+// ✅ listen both
+const EVENTS = ['.direct.message', 'direct.message'];
 
 export default function useUserEvents({
   effectiveKind,
   accessToken,
   currentUserId,
   selectedRoomId = null,
-}) {
-  const dispatch = useDispatch();
 
-  // فقط برای toast، نه resubscribe
+  // ✅ NEW: callback to global notify
+  onNotify,
+}) {
+  // فقط برای اینکه با تغییر selectedRoomId resubscribe نشه
   const selectedRoomRef = useRef(selectedRoomId);
   useEffect(() => {
     selectedRoomRef.current = selectedRoomId;
   }, [selectedRoomId]);
+
+  // callback ref (تا dependency ها ریساب‌سکرایب نکنن)
+  const onNotifyRef = useRef(onNotify);
+  useEffect(() => {
+    onNotifyRef.current = onNotify;
+  }, [onNotify]);
 
   const subRef = useRef({
     key: null,
@@ -80,7 +85,6 @@ export default function useUserEvents({
         return;
       }
 
-      // stopListening
       for (const ev of EVENTS) {
         try {
           prev.channel.stopListening(ev);
@@ -90,22 +94,20 @@ export default function useUserEvents({
         }
       }
 
-      // unbind_global
       try {
-        const pch = prev.channel?.pusher?.channels?.channels?.[`private-${prev.channelName}`];
+        const pch =
+          prev.channel?.pusher?.channels?.channels?.[`private-${prev.channelName}`];
         prev.binds.forEach((fn) => {
           try {
             pch?.unbind_global?.(fn);
-          } catch (e) {
+          } catch {
             // ignore
-            void e;
           }
         });
-      } catch (e) {
-        void e;
+      } catch {
+        // ignore
       }
 
-      // leave
       try {
         prev.echo.leave(`private-${prev.channelName}`);
         dlog('echo.leave ok', `private-${prev.channelName}`);
@@ -123,20 +125,17 @@ export default function useUserEvents({
       };
     };
 
-    // not ready
     if (!nextKey) {
       log('not ready -> cleanup');
       cleanup();
       return undefined;
     }
 
-    // same key => no resubscribe
     if (subRef.current.key === nextKey && subRef.current.channel) {
       log('same key -> skip resubscribe ✅', { key: nextKey });
       return undefined;
     }
 
-    // key changed => cleanup then subscribe
     cleanup();
 
     const echo = getOrCreateEcho(accessToken);
@@ -165,10 +164,11 @@ export default function useUserEvents({
 
     const channel = echo.private(channelName);
 
-    // bind_global
+    // bind_global (برای دیدن eventName واقعی)
     const binds = [];
     try {
-      const pusherChannel = channel?.pusher?.channels?.channels?.[`private-${channelName}`];
+      const pusherChannel =
+        channel?.pusher?.channels?.channels?.[`private-${channelName}`];
       if (pusherChannel?.bind_global) {
         const fn = (eventName, data) => {
           log('GLOBAL EVENT on user channel', { eventName, dataPreview: safePreview(data) });
@@ -183,37 +183,16 @@ export default function useUserEvents({
       log('bind_global failed', e);
     }
 
-    // listen
+    // ✅ listen -> فقط پاس بده به onNotify
     EVENTS.forEach((ev) => {
       channel.listen(ev, (payload) => {
         log('EVENT RECEIVED ✅', { ev, payloadPreview: safePreview(payload) });
 
-        const roomId = payload?.room_id ?? payload?.roomId ?? null;
-        const msg = payload?.message ?? null;
-
-        const fromId = msg?.user_id ?? msg?.user?.id ?? null;
-        const fromName = msg?.user?.name ?? payload?.sender_name ?? null;
-        const preview = msg?.content ?? payload?.preview ?? '';
-
-        dispatch(
-          updateMessages({
-            type: 'message_notify',
-            room_id: roomId,
-            message: msg,
-            message_id: msg?.id ?? payload?.message_id ?? null,
-            sender_id: fromId,
-            sender_name: fromName,
-            preview,
-            created_at: msg?.created_at ?? payload?.created_at ?? null,
-            raw: payload,
-          }),
-        );
-
-        const activeRoom = selectedRoomRef.current;
-        if (!activeRoom || Number(activeRoom) !== Number(roomId)) {
-          toast.info(preview ? `${fromName || 'New message'}: ${preview}` : fromName || 'New message');
-        } else {
-          dlog('toast skipped (room active)', { activeRoom, roomId });
+        // ✅ فقط یک کار: forward کن
+        try {
+          onNotifyRef.current?.(payload);
+        } catch (e) {
+          console.error('[UserEvents] onNotify error', e);
         }
       });
 
@@ -230,15 +209,16 @@ export default function useUserEvents({
     };
 
     return cleanup;
-  }, [dispatch, effectiveKind, accessToken, currentUserId]);
+  }, [effectiveKind, accessToken, currentUserId]);
+
+  return null;
 }
 
 function safePreview(x) {
   try {
     const s = JSON.stringify(x);
     return s.length > 220 ? s.slice(0, 220) + '…' : s;
-  } catch (e) {
-    void e;
+  } catch {
     return String(x);
   }
 }

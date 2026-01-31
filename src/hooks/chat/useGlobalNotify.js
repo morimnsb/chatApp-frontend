@@ -2,7 +2,14 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { toast } from 'react-toastify';
 import { useDispatch } from 'react-redux';
+
+// ✅ legacy action
 import { updateMessages } from '@/actions/messageActions';
+
+const toNum = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
 
 export function useGlobalNotify({ selectedRoom }) {
   const dispatch = useDispatch();
@@ -26,43 +33,70 @@ export function useGlobalNotify({ selectedRoom }) {
     } catch {}
   }, []);
 
-  return useCallback((packet) => {
-    if (!packet || packet.type !== 'notify_message') return;
+  return useCallback(
+    (payload) => {
+      if (!payload || typeof payload !== 'object') return;
 
-    const roomId = Number(packet.room_id || 0);
-    if (!roomId) return;
+      // payload از user channel میاد
+      const roomId = toNum(payload.room_id ?? payload.roomId);
+      if (!roomId) return;
 
-    const isActiveRoom = Number(selectedRoom) === roomId;
+      const isActiveRoom = toNum(selectedRoom) === roomId;
 
-    const fromId = Number(packet.from_user?.id || 0);
-    const fromName =
-      packet.from_user?.name ||
-      packet.from_user?.first_name ||
-      packet.from_user?.email ||
-      `User ${fromId || ''}`;
+      const msg = payload.message || {};
+      const fromUser = payload.from_user || msg.user || msg.sender || {};
 
-    const text = String(packet.text || packet.message?.content || 'New message');
+      const fromId = toNum(fromUser.id ?? msg.user_id ?? msg.sender_id);
+      const fromName =
+        fromUser.name ||
+        fromUser.first_name ||
+        fromUser.email ||
+        msg.sender_name ||
+        payload.sender_name ||
+        (fromId ? `User ${fromId}` : 'New message');
 
-    const now = Date.now();
-    if (!isActiveRoom && now - lastAtRef.current > 900) {
-      lastAtRef.current = now;
-      toast.info(`${fromName}: ${text}`, { toastId: `notif-${packet.message_id || now}` });
-      notifyAudioRef.current?.play().catch(() => {});
-      showDesktop(fromName, text);
-    }
+      const text = String(
+        payload.text ??
+          msg.content ??
+          payload.preview ??
+          msg.preview ??
+          'New message'
+      );
 
-    dispatch(updateMessages({
-      type: 'message',
-      room_id: roomId,
-      message: {
-        id: packet.message_id || `notif-${now}`,
-        room_id: roomId,
-        sender_id: fromId,
-        sender_name: fromName,
-        content: text,
-        created_at: packet.created_at || new Date().toISOString(),
-      },
-      meta: { via: 'global-notif', unread: !isActiveRoom },
-    }));
-  }, [dispatch, selectedRoom, showDesktop]);
+      const createdAt = payload.created_at || msg.created_at || new Date().toISOString();
+      const now = Date.now();
+
+      // toast فقط وقتی روم فعال نیست
+      if (!isActiveRoom && now - lastAtRef.current > 900) {
+        lastAtRef.current = now;
+        toast.info(`${fromName}: ${text}`, {
+          toastId: `notif-${msg.id || payload.message_id || now}`,
+        });
+        notifyAudioRef.current?.play().catch(() => {});
+        showDesktop(fromName, text);
+      }
+
+      // ✅ مهم: فقط legacy reducer آپدیت شود
+      dispatch(
+        updateMessages({
+          type: 'notify',        // legacy reducer معمولاً type رو می‌خونه
+          room_id: roomId,
+          roomId,
+          message: {
+            id: msg.id || payload.message_id || `notif-${now}`,
+            room_id: roomId,
+            chat_room_id: roomId,
+            user_id: msg.user_id || msg.sender_id || fromId || null,
+            sender_id: msg.sender_id || msg.user_id || fromId || null,
+            sender_name: msg.sender_name || fromName,
+            content: msg.content || text,
+            created_at: msg.created_at || createdAt,
+            user: msg.user || fromUser || null,
+          },
+          meta: { via: 'global-notif', unread: !isActiveRoom },
+        })
+      );
+    },
+    [dispatch, selectedRoom, showDesktop]
+  );
 }

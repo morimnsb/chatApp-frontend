@@ -1,6 +1,9 @@
-// chatApp-frontend\src\hooks\useRoomTransport.js
+// chatApp-frontend/src/hooks/useRoomTransport.js
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useDispatch } from 'react-redux';
+
+// ✅ RTK slice action
+import { updateFromPacket } from '@/redux/slices/messageSlice';
 
 const RT_DEBUG = '[RoomTransport]';
 const DEFAULT_TYPING_THROTTLE_MS = 800;
@@ -25,9 +28,15 @@ const previewJson = (obj, max = 420) => {
   }
 };
 
+// ✅ better normalize: supports {message}, {payload}, {data}, or raw msg
 const normalizeIncoming = (payload, roomId) => {
   const raw = payload || {};
-  const rawMsg = raw?.message || raw;
+
+  const rawMsg =
+    raw?.message ??
+    raw?.payload ??
+    raw?.data ??
+    raw;
 
   const inferredRoom =
     raw?.room_id ??
@@ -38,11 +47,46 @@ const normalizeIncoming = (payload, roomId) => {
     roomId ??
     null;
 
+  // normalize message shape (content field)
+  const msg = rawMsg && typeof rawMsg === 'object'
+    ? {
+        ...rawMsg,
+        room_id: rawMsg.room_id ?? inferredRoom,
+        content:
+          rawMsg.content ??
+          rawMsg.text ??
+          rawMsg.message ??
+          rawMsg.body ??
+          '',
+        created_at:
+          rawMsg.created_at ??
+          rawMsg.ts ??
+          rawMsg.timestamp ??
+          new Date().toISOString(),
+        sender_id:
+          rawMsg.sender_id ??
+          rawMsg.user_id ??
+          rawMsg.user?.id ??
+          rawMsg.sender?.id ??
+          null,
+        sender_name:
+          rawMsg.sender_name ??
+          rawMsg.user?.name ??
+          rawMsg.sender?.name ??
+          null,
+      }
+    : {
+        id: `evt-${Date.now()}`,
+        room_id: inferredRoom,
+        content: String(rawMsg ?? ''),
+        created_at: new Date().toISOString(),
+      };
+
   return {
     type: raw?.type || 'message',
     room_id: inferredRoom,
     roomId: inferredRoom,
-    message: rawMsg,
+    message: msg,
     raw,
   };
 };
@@ -173,12 +217,22 @@ export default function useRoomTransport({
       }
 
       const packet = normalizeIncoming(payload, roomId);
-console.log('[RT] dispatching UPDATE_MESSAGES', packet);
 
-      // ✅ 1) Redux update (ConversationList depends on this)
-      // dispatch(updateMessages(packet));
+      if (DEBUG_TRANSPORT) {
+        console.log(RT_DEBUG, '[normalized]', previewJson(packet));
+      }
 
-      // ✅ 2) keep local notifications too (ChatWindow etc.)
+      // ✅ 1) Redux update (ConversationList + global store)
+      dispatch(
+        updateFromPacket({
+          kind: 'message',
+          room_id: packet.room_id,
+          message: packet.message,
+          meta: { via: 'room-transport', event: 'ChatMessageCreated' },
+        })
+      );
+
+      // ✅ 2) local notification path (ChatWindow etc.)
       safeNotify(packet);
     };
 
@@ -204,7 +258,6 @@ console.log('[RT] dispatching UPDATE_MESSAGES', packet);
         raw: payload,
       };
 
-      // (اختیاری) اگر typing هم می‌خوای تو redux نگه داری، اینجا dispatch کن
       safeNotify(packet);
     });
 
@@ -278,7 +331,7 @@ console.log('[RT] dispatching UPDATE_MESSAGES', packet);
         throw new Error(`sendMessage failed ${resp.status}: ${textBody.slice(0, 200)}`);
       }
     },
-    [backend, roomId, currentUserId, accessToken, API],
+    [backend, roomId, currentUserId, accessToken, API]
   );
 
   const lastTypingSentAtRef = useRef(0);
@@ -304,7 +357,7 @@ console.log('[RT] dispatching UPDATE_MESSAGES', packet);
         return false;
       }
     },
-    [backend, roomId, typingThrottleMs, channelName],
+    [backend, roomId, typingThrottleMs, channelName]
   );
 
   return { status, connectionLabel, sendMessage, sendTyping };
