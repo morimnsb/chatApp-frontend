@@ -1,391 +1,426 @@
-// src/components/ConversationList.jsx
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
-import { ListGroup, Button, Spinner } from 'react-bootstrap';
-import axios from 'axios';
-import { useSelector } from 'react-redux';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { Form, Button, Spinner, Alert } from 'react-bootstrap';
+import { useSelector, useDispatch } from 'react-redux';
+import { jwtDecode } from 'jwt-decode';
 import { toast } from 'react-toastify';
 
-import { formatTime } from '@/utils/formatTime';
-import profilephoto1 from '@/assets/images/message/profilephoto1.png';
-import './ConversationList.css';
+import useFetch from '@/hooks/useFetch';
+import useRoomTransport from '@/hooks/useRoomTransport';
 
+import { resetTypingIndicator, updateMessages } from '@/actions/messageActions';
+
+import ChatMessagesList from '@/components/chat/ChatWindow/ChatMessagesList';
+import TypingIndicator from '@/components/chat/ChatWindow/TypingIndicator';
+
+import { useAutoScroll } from '@/components/chat/hooks/useAutoScroll';
+import { useDocTitleBadge } from '@/components/chat/hooks/useDocTitleBadge';
+
+/* ----------------------------- helpers ----------------------------- */
+
+const ROOM_TAG = '[ChatWindow]';
 const DEV = import.meta.env.DEV === true;
-const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
-const log = (...a) => DEBUG && console.log('[ConversationList]', ...a);
+const DEBUG_LEVEL = DEV ? Number(import.meta.env.VITE_WS_DEBUG_LEVEL || 0) : 0;
 
-const safeArr = (v) => (Array.isArray(v) ? v : []);
-const clip = (s, n = 38) => {
-  const t = String(s || '').trim();
-  if (!t) return '';
-  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
-};
+const log = (lvl, ...args) => DEBUG_LEVEL >= lvl && console.log(...args);
+const warn = (...args) => DEBUG_LEVEL >= 1 && console.warn(...args);
+const err = (...args) => DEBUG_LEVEL >= 1 && console.error(...args);
 
-const coerceNum = (v) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-};
+const isJwt = (t) => typeof t === 'string' && t.split('.').length === 3;
+const stripBearer = (t) => (t || '').toString().replace(/^Bearer\s+/i, '').trim();
 
-// ✅ selectors (این‌ها را اگر نام state شما فرق دارد، فقط اینجا تغییر بده)
-const selectByRoom = (state) =>
-  state?.messages?.byRoom || state?.message?.byRoom || state?.messageSlice?.byRoom || {};
+/* ✅ Only show a message (no previous room UI) */
+function SelectRoomPlaceholder() {
+  return (
+    <div className="no-chat-selected">
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: 16, fontWeight: 800 }}>هیچ گفتگویی انتخاب نشده</div>
+        <div style={{ marginTop: 8, opacity: 0.8 }}>از لیست سمت چپ یک گفتگو را انتخاب کن.</div>
+      </div>
+    </div>
+  );
+}
 
-const selectDmRooms = (state) =>
-  state?.messages?.rooms?.individual ||
-  state?.messages?.dmRooms ||
-  state?.message?.rooms?.individual ||
-  [];
-
-const selectGroupRooms = (state) =>
-  state?.messages?.rooms?.groups ||
-  state?.messages?.groupRooms ||
-  state?.message?.rooms?.groups ||
-  [];
-
-export default function ConversationList({
-  currentUser,
-  handleSelectChat,
-  selectedRoom,
-  typingIndicators = {},
-  onRespondFriendRequest,
+export default function ChatWindow({
+  roomId,
+  endpoints,
+  effectiveKind,
+  accessToken: accessTokenProp,
 }) {
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState('');
+  const dispatch = useDispatch();
 
-  const byRoom = useSelector(selectByRoom);
-  const dmRoomsRaw = useSelector(selectDmRooms);
-  const groupRoomsRaw = useSelector(selectGroupRooms);
-
-  const individualMessages = useMemo(() => safeArr(dmRoomsRaw), [dmRoomsRaw]);
-  const groupMessages = useMemo(() => safeArr(groupRoomsRaw), [groupRoomsRaw]);
-
-  const renderTypingIndicator = useCallback(
-    (userId) => (typingIndicators?.[userId] ? 'is typing...' : null),
-    [typingIndicators]
+  const currentUserFromStore = useSelector(
+    (s) => s.auth?.currentUser?.id || s.messages?.currentUserId || null,
   );
 
-  // ✅ helper: get last message from byRoom for a room
-  const getLastForRoom = useCallback(
-    (roomId) => {
-      const rid = String(roomId);
-      const arr = safeArr(byRoom?.[rid]);
-      return arr.length ? arr[arr.length - 1] : null;
-    },
-    [byRoom]
-  );
+  const rawToken = accessTokenProp || '';
+  const accessToken = stripBearer(rawToken);
 
-  // debug snapshot
-  const prevSig = useRef('');
+  const [messages, setMessages] = useState([]);
+  const [messageInput, setMessageInput] = useState('');
+  const [uiError, setUiError] = useState(null);
+  const [typingUserId, setTypingUserId] = useState(null);
+  const [currentUserId, setCurrentUserId] = useState(currentUserFromStore || null);
+
+  const seenMessageIdsRef = useRef(new Set());
+  const typingTimeoutRef = useRef(null);
+
+  const lastNotifyAtRef = useRef(0);
+  const lastTypingUiAtRef = useRef(0);
+  const notifyAudioRef = useRef(null);
+
+  const inputRef = useRef(null);
+
+  const { bump: bumpTitle } = useDocTitleBadge();
+
+  const { containerRef, notifyNewMessage, scrollToBottom, showNewBadge, newCount } =
+    useAutoScroll({ enabled: true, bottomThresholdPx: 140 });
+
+  /* -------------------- ✅ HARD RESET when room changes -------------------- */
   useEffect(() => {
-    if (!DEBUG) return;
+    // وقتی روم عوض شد: هیچ چیزی از روم قبلی نباید باقی بماند
+    setMessages([]);
+    setMessageInput('');
+    setUiError(null);
+    setTypingUserId(null);
 
-    const sampleDm = individualMessages.slice(0, 2).map((c) => {
-      const roomId = c?.roomId ?? c?.room_id ?? c?.chat_room_id ?? c?.id ?? null;
-      const last = roomId ? getLastForRoom(roomId) : null;
-      return {
-        roomId,
-        name: c?.first_name || c?.name,
-        lastText: last?.content || c?.last_message_text || '',
-        lastAt: last?.created_at || c?.last_message_at || null,
-      };
-    });
+    seenMessageIdsRef.current = new Set();
 
-    const sigObj = {
-      selectedRoom,
-      dmCount: individualMessages.length,
-      groupCount: groupMessages.length,
-      dmSample: sampleDm,
-    };
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = null;
 
-    const sig = JSON.stringify(sigObj);
-    if (sig !== prevSig.current) {
-      prevSig.current = sig;
-      log('snapshot', sigObj);
+    // این باعث میشه badge های "new messages" هم از اول شروع بشن
+    setTimeout(() => scrollToBottom('auto'), 0);
+
+    log(2, ROOM_TAG, 'room changed -> cleared local chat state', { roomId });
+  }, [roomId, scrollToBottom]);
+
+  /* -------------------- notifications init -------------------- */
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
     }
-  }, [DEBUG, selectedRoom, individualMessages, groupMessages, getLastForRoom]);
+  }, []);
 
-  const handleCreateGroup = useCallback(async () => {
-    setCreating(true);
-    setCreateError('');
+  useEffect(() => {
+    notifyAudioRef.current = new Audio('/sounds/incoming.mp3');
+  }, []);
+
+  const showDesktopNotification = useCallback((title, body) => {
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    if (!document.hidden) return;
 
     try {
-      const token = localStorage.getItem('access_token');
-      const body = { name: 'ias: New Group Chat', is_group: true };
+      new Notification(title, { body });
+    } catch {}
+  }, []);
 
-      const res = await axios.post('http://localhost:8000/api/rooms', body, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-      });
-
-      log('create group response', res?.data);
-
-      if (res.data?.room?.id) {
-        handleSelectChat(res.data.room.id);
-      }
-    } catch (e) {
-      log('create group error', e);
-      if (e?.response?.data) {
-        setCreateError(
-          typeof e.response.data === 'string'
-            ? e.response.data
-            : JSON.stringify(e.response.data)
-        );
-      } else {
-        setCreateError('Server error while creating group');
-      }
-    } finally {
-      setCreating(false);
+  /* -------------------- currentUserId from store/JWT//me -------------------- */
+  useEffect(() => {
+    if (currentUserFromStore) {
+      setCurrentUserId(currentUserFromStore);
+      return;
     }
-  }, [handleSelectChat]);
+
+    if (isJwt(accessToken)) {
+      try {
+        const dec = jwtDecode(accessToken);
+        const id = dec?.user_id ?? dec?.sub ?? null;
+        if (id) {
+          setCurrentUserId(Number(id));
+          log(2, ROOM_TAG, 'currentUserId from JWT', Number(id));
+        }
+      } catch (e) {
+        warn(ROOM_TAG, 'JWT decode skipped:', e?.message);
+      }
+    }
+  }, [currentUserFromStore, accessToken]);
+
+  useEffect(() => {
+    const needFetchMe = !currentUserId && !!accessToken && endpoints?.me;
+    if (!needFetchMe) return;
+
+    let abort = false;
+
+    (async () => {
+      try {
+        log(2, ROOM_TAG, 'fetching /me', endpoints.me);
+        const resp = await fetch(endpoints.me, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!resp.ok) throw new Error(`GET /me ${resp.status}`);
+        const me = await resp.json().catch(() => ({}));
+
+        if (!abort && me?.id) {
+          setCurrentUserId(Number(me.id));
+          log(2, ROOM_TAG, 'currentUserId from /me', Number(me.id));
+        }
+      } catch (e) {
+        warn(ROOM_TAG, '[me] failed:', e?.message);
+      }
+    })();
+
+    return () => {
+      abort = true;
+    };
+  }, [currentUserId, accessToken, endpoints]);
+
+  /* -------------------- history fetch (HTTP) -------------------- */
+  const fetchConfig = useMemo(
+    () => (roomId ? { headers: { Authorization: `Bearer ${accessToken}` } } : {}),
+    [roomId, accessToken],
+  );
+
+  const { data: fetchedMessages, loading, error: fetchError } = useFetch(
+    roomId && endpoints?.roomMessages ? endpoints.roomMessages(roomId) : null,
+    fetchConfig,
+  );
+
+  useEffect(() => {
+    if (!roomId) return;
+    if (!fetchedMessages) return;
+
+    let arr = [];
+    if (Array.isArray(fetchedMessages)) arr = fetchedMessages;
+    else if (Array.isArray(fetchedMessages?.messages)) arr = fetchedMessages.messages;
+    else if (Array.isArray(fetchedMessages?.data)) arr = fetchedMessages.data;
+
+    const seen = new Set();
+    for (const m of arr) if (m?.id) seen.add(m.id);
+    seenMessageIdsRef.current = seen;
+
+    setMessages(arr);
+
+    setTimeout(() => scrollToBottom('auto'), 0);
+    log(2, ROOM_TAG, 'history loaded', { roomId, count: arr.length });
+  }, [roomId, fetchedMessages, scrollToBottom]);
+
+  useEffect(() => {
+    if (!fetchError) return;
+    err(ROOM_TAG, 'Error fetching messages:', fetchError);
+    setUiError('Error fetching messages. Please try again.');
+  }, [fetchError]);
+
+  /* -------------------- WS notification handler -------------------- */
+  const handleNotification = useCallback(
+    (packet) => {
+      if (!packet || !packet.type) return;
+
+      if (packet.type === 'message') {
+        const m = packet.message;
+
+        if (m?.id && !seenMessageIdsRef.current.has(m.id)) {
+          seenMessageIdsRef.current.add(m.id);
+
+          setMessages((prev) => [...prev, m]);
+          notifyNewMessage();
+        }
+
+        dispatch(updateMessages(packet));
+
+        const senderId = m?.sender_id;
+        const mine = Number(currentUserId);
+
+        if (senderId && mine && Number(senderId) !== mine) {
+          const now = Date.now();
+          if (now - lastNotifyAtRef.current > 1200) {
+            lastNotifyAtRef.current = now;
+
+            toast?.info(m?.content ?? 'پیام جدید');
+            notifyAudioRef.current?.play().catch(() => {});
+            showDesktopNotification(m?.sender_name || 'پیام جدید', m?.content || '');
+
+            bumpTitle(1);
+          }
+        }
+
+        return;
+      }
+
+      if (packet.type === 'typing_indicator') {
+        const uid = packet.user_id;
+        if (!uid) return;
+
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
+        setTypingUserId(uid);
+
+        typingTimeoutRef.current = setTimeout(() => {
+          dispatch(resetTypingIndicator(uid));
+          setTypingUserId(null);
+          typingTimeoutRef.current = null;
+        }, 5000);
+
+        return;
+      }
+
+      if (packet.type === 'message_received') {
+        setMessages((prev) =>
+          prev.map((x) => (x?.id === packet.message ? { ...x, read_receipt: true } : x)),
+        );
+      }
+    },
+    [dispatch, currentUserId, notifyNewMessage, showDesktopNotification, bumpTitle],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    };
+  }, [roomId]);
+
+  /* -------------------- transport -------------------- */
+  const { status: transportStatus, connectionLabel, sendMessage, sendTyping } =
+    useRoomTransport({
+      backendKind: effectiveKind,
+      roomId,
+      accessToken,
+      handleNotification,
+      currentUserId,
+    });
+
+  useEffect(() => {
+    if (transportStatus === 'connected') {
+      setTimeout(() => inputRef.current?.focus?.(), 0);
+    }
+  }, [transportStatus, roomId]);
+
+  /* -------------------- send message -------------------- */
+  const readyToSend =
+    Boolean(roomId) &&
+    Boolean(accessToken) &&
+    Number.isFinite(Number(currentUserId)) &&
+    transportStatus === 'connected';
+
+  const handleSendMessage = useCallback(
+    async (e) => {
+      e.preventDefault();
+
+      const text = String(messageInput || '').trim();
+      setUiError(null);
+
+      log(2, ROOM_TAG, 'SUBMIT', { roomId, currentUserId, transportStatus, textLen: text.length });
+
+      if (!currentUserId) {
+        setUiError('User not ready yet (loading /me). Try again in 1 second.');
+        return;
+      }
+
+      if (!text) {
+        setUiError('Message cannot be empty');
+        return;
+      }
+
+      if (transportStatus !== 'connected') {
+        setUiError('WebSocket is not connected yet.');
+        return;
+      }
+
+      try {
+        await sendMessage(text);
+        setMessageInput('');
+        setTimeout(() => scrollToBottom('smooth'), 0);
+      } catch (e2) {
+        err(ROOM_TAG, 'sendMessage failed', e2);
+        setUiError(e2?.message || 'Failed to send message');
+      }
+    },
+    [messageInput, sendMessage, transportStatus, roomId, currentUserId, scrollToBottom],
+  );
+
+  /* -------------------- typing (UI throttle) -------------------- */
+  const handleInputChange = useCallback(
+    (e) => {
+      const val = e.target.value;
+      setMessageInput(val);
+
+      if (!currentUserId) return;
+      if (!val.trim()) return;
+
+      const now = Date.now();
+      if (now - lastTypingUiAtRef.current < 800) return;
+      lastTypingUiAtRef.current = now;
+
+      sendTyping(currentUserId);
+    },
+    [currentUserId, sendTyping],
+  );
+
+  /* -------------------- render -------------------- */
+  if (!roomId) {
+    return <SelectRoomPlaceholder />;
+  }
+if (!currentUserId) return <div>Loading user...</div>;
 
   return (
-    <ListGroup className="message-list-wrapper">
-      {/* ----------------- INDIVIDUAL ----------------- */}
-      <ListGroup.Item disabled className="list-group-header">
-        INDIVIDUAL MESSAGES
-      </ListGroup.Item>
-
-      {individualMessages.length > 0 ? (
-        individualMessages.map((convo) => {
-          const roomId =
-            convo?.roomId ?? convo?.room_id ?? convo?.chat_room_id ?? convo?.id ?? null;
-
-          const userId =
-            convo?.partnerId ?? convo?.partner_id ?? convo?.user_id ?? null;
-
-          const last = roomId ? getLastForRoom(roomId) : null;
-
-          const lastMsgText =
-            last?.content ||
-            convo?.last_message_text ||
-            convo?.last_message?.content ||
-            '';
-
-          const lastTime =
-            last?.created_at ||
-            convo?.last_message_at ||
-            convo?.last_message?.created_at ||
-            null;
-
-          const displayName =
-            convo?.first_name ||
-            convo?.firstName ||
-            convo?.name ||
-            convo?.email ||
-            `User #${userId ?? ''}`;
-
-          const avatar = convo?.photo || convo?.avatar || profilephoto1;
-          const isActive = Number(selectedRoom) === Number(roomId);
-
-          const friendshipStatus = convo?.friendship_status;
-          const friendshipId = convo?.friendship_id;
-
-          const isFriendReqIncoming = friendshipStatus === 'pending_incoming';
-          const isFriendReqOutgoing = friendshipStatus === 'pending_outgoing';
-
-          const isSelf =
-            currentUser?.id && userId != null && Number(currentUser.id) === Number(userId);
-
-          let subtitle = '';
-          if (isFriendReqIncoming) subtitle = 'sent you a friend request';
-          else if (isFriendReqOutgoing) subtitle = 'Friend request sent';
-          else subtitle = clip(lastMsgText, 60);
-
-          const inlinePreview =
-            !isFriendReqIncoming && !isFriendReqOutgoing ? clip(lastMsgText, 28) : '';
-
-          return (
-            <ListGroup.Item
-              key={`dm-${String(roomId ?? userId ?? displayName)}`} // ✅ stable
-              className={`message-list-item p-0 ${isActive ? 'active' : ''}`}
-            >
-              <div
-                role="button"
-                tabIndex={0}
-                className="message-row w-100"
-                style={{ cursor: 'pointer' }}
-                onClick={() => handleSelectChat(roomId, userId)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSelectChat(roomId, userId);
-                }}
-              >
-                <div className="message-content">
-                  <img
-                    src={avatar}
-                    alt={displayName}
-                    className={`profile-img ${convo?.is_online ? 'is-online' : 'is-offline'}`}
-                  />
-                </div>
-
-                <div className="message-body">
-                  <div className="message-header">
-                    <span className="user-name">
-                      {displayName}{' '}
-                      {isSelf && (
-                        <span className="text-muted" style={{ fontSize: 11 }}>
-                          (you)
-                        </span>
-                      )}
-
-                      {inlinePreview ? (
-                        <span className="text-muted" style={{ fontSize: 12, marginLeft: 8 }}>
-                          · {inlinePreview}
-                        </span>
-                      ) : null}
-                    </span>
-
-                    <span className="time-text">{lastTime ? formatTime(lastTime) : ''}</span>
-                  </div>
-
-                  <div className="message-details">
-                    {isFriendReqIncoming && friendshipId ? (
-                      <div className="d-flex align-items-center gap-2 w-100">
-                        <span className="subtext">{subtitle}</span>
-
-                        {onRespondFriendRequest && (
-                          <div className="d-flex gap-1 ms-auto">
-                            <Button
-                              variant="success"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onRespondFriendRequest({ friendshipId, action: 'accept' });
-                              }}
-                            >
-                              Accept
-                            </Button>
-
-                            <Button
-                              variant="outline-danger"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onRespondFriendRequest({ friendshipId, action: 'reject' });
-                              }}
-                            >
-                              Decline
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <>
-                        {renderTypingIndicator(userId) ? (
-                          <span className="subtext">{renderTypingIndicator(userId)}</span>
-                        ) : (
-                          <span className="subtext">{subtitle}</span>
-                        )}
-
-                        {Number(convo?.unread_count || 0) > 0 && (
-                          <span className="unread_count">{convo.unread_count}</span>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </ListGroup.Item>
-          );
-        })
-      ) : (
-        <ListGroup.Item className="no-messages">No individual messages available</ListGroup.Item>
+    <div className="chat-window chat-window--full">
+      {loading && (
+        <div className="loading-spinner">
+          <Spinner animation="border" />
+        </div>
       )}
 
-      {/* ----------------- GROUP HEADER + BUTTON ----------------- */}
-      <ListGroup.Item className="list-group-header group-header-row">
-        <span>GROUP MESSAGES</span>
+      {uiError && <Alert variant="danger">{uiError}</Alert>}
 
-        <Button
-          variant="primary"
-          size="sm"
-          className="new-group-btn"
-          onClick={handleCreateGroup}
-          disabled={creating}
-        >
-          {creating ? (
-            <>
-              <Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" />{' '}
-              Creating...
-            </>
-          ) : (
-            '+ New Group'
+      <div className="connection-status">
+        {connectionLabel || '—'}
+        {DEBUG_LEVEL > 0 && (
+          <span style={{ opacity: 0.6, fontSize: 11, marginLeft: 8 }}>
+            {ROOM_TAG} roomId={roomId} backend={String(effectiveKind)} status={transportStatus}
+          </span>
+        )}
+      </div>
+
+      <div className="chat-window__body">
+        <div className="chat-window__messagesWrap">
+          {/* ✅ DEBUG PANEL */}
+{import.meta.env.DEV && (
+  <div style={{ padding: 8, fontSize: 12, opacity: 0.85 }}>
+    <div><b>roomId:</b> {roomId}</div>
+    <div><b>currentUserId:</b> {String(currentUserId)}</div>
+    <div><b>messages.length:</b> {messages?.length ?? 0}</div>
+    <div><b>sample:</b> {messages?.[0] ? JSON.stringify(messages[0]).slice(0, 220) + '…' : '—'}</div>
+  </div>
+)}
+
+          <ChatMessagesList
+  messages={messages}
+  currentUserId={currentUserId}
+  containerRef={containerRef}
+/>
+
+
+          {showNewBadge && (
+            <button
+              type="button"
+              onClick={() => scrollToBottom('smooth')}
+              className="chat-window__newBadge"
+            >
+              New messages ({newCount})
+            </button>
           )}
-        </Button>
-      </ListGroup.Item>
+        </div>
 
-      {createError && (
-        <ListGroup.Item className="create-error">
-          <span style={{ color: 'red', fontSize: '0.8rem' }}>{createError}</span>
-        </ListGroup.Item>
-      )}
+        <TypingIndicator typing={typingUserId} />
 
-      {/* ----------------- GROUP LIST ----------------- */}
-      {groupMessages.length > 0 ? (
-        groupMessages.map((room) => {
-          const roomId = room?.id ?? null;
-          const last = roomId ? getLastForRoom(roomId) : null;
+        <Form onSubmit={handleSendMessage} className="chat-input-form">
+          <Form.Group controlId="messageInput">
+            <Form.Control
+              ref={inputRef}
+              type="text"
+              placeholder={currentUserId ? 'Type a message...' : 'Loading user…'}
+              value={messageInput}
+              onChange={handleInputChange}
+              disabled={!currentUserId || transportStatus !== 'connected'}
+            />
+          </Form.Group>
 
-          const lastMsgText =
-            last?.content || room?.last_message_text || room?.last_message?.content || '';
-
-          const lastTime =
-            last?.created_at || room?.last_message_at || room?.last_message?.created_at || null;
-
-          const name = room?.name || room?.title || room?.room_name || `Room #${roomId}`;
-          const isActive = Number(selectedRoom) === Number(roomId);
-
-          const inlinePreview = clip(lastMsgText, 28);
-
-          return (
-            <ListGroup.Item
-              key={`group-${String(roomId ?? name)}`}
-              className={`message-list-item p-0 ${isActive ? 'active' : ''}`}
-            >
-              <div
-                role="button"
-                tabIndex={0}
-                className="message-row w-100"
-                style={{ cursor: 'pointer' }}
-                onClick={() => handleSelectChat(roomId)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSelectChat(roomId);
-                }}
-              >
-                <div className="message-content">
-                  <img src={room?.photo || profilephoto1} alt={name} className="profile-img" />
-                </div>
-
-                <div className="message-body">
-                  <div className="message-header">
-                    <span className="room-name">
-                      {name}
-                      {inlinePreview ? (
-                        <span className="text-muted" style={{ fontSize: 12, marginLeft: 8 }}>
-                          · {inlinePreview}
-                        </span>
-                      ) : null}
-                    </span>
-
-                    <span className="time-text">{lastTime ? formatTime(lastTime) : ''}</span>
-                  </div>
-
-                  <div className="message-details">
-                    <span className="subtext">{clip(lastMsgText, 60)}</span>
-
-                    {Number(room?.unread_count || 0) > 0 && (
-                      <span className="unread_count">{room.unread_count}</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </ListGroup.Item>
-          );
-        })
-      ) : (
-        <ListGroup.Item className="no-messages">No group messages available</ListGroup.Item>
-      )}
-    </ListGroup>
+          <Button type="submit" variant="primary" disabled={!readyToSend || !messageInput.trim()}>
+            Send
+          </Button>
+        </Form>
+      </div>
+    </div>
   );
 }

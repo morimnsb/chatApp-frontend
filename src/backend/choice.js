@@ -1,13 +1,126 @@
 // src/backend/choice.js
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
-/**
- * 🎯 از این به بعد فقط دو mode:
- * - 'reverb'  → Laravel + Reverb/Echo (real-time)
- * - 'django'  → Django backend
- */
-export const BACKENDS = ['reverb', 'django'];
 export const BACKEND_KEY = 'backendChoice';
+
+export const BACKEND_REGISTRY = {
+  
+
+  reverb: {
+    key: 'reverb',
+    label: 'Laravel + Reverb (real-time)',
+    apiBaseEnvKeys: ['VITE_API_BASE_REVERB', 'REACT_APP_API_BASE_REVERB'],
+    defaultApiBase: 'http://localhost:8000/api',
+    paths: {
+      convos: '/chatMeetUp/conversations/',
+      rooms: '/chatMeetUp/chatrooms/',
+      users: '/auth/users/',
+      friend: '/chatMeetUp/friendship',
+      me: '/auth/me',
+      makeContact: '/chatMeetUp/make-contact',
+      firstMessage: '/chatMeetUp/make-contact',
+      roomMessages: (roomId) => `/chatMeetUp/messages/${roomId}/`,
+    },
+    ws: { kind: 'echo' }, // Echo/Reverb connector
+  },
+
+  node: {
+    key: 'node',
+    label: 'Node.js (Express/Fastify)',
+    apiBaseEnvKeys: ['VITE_API_BASE_NODE', 'REACT_APP_API_BASE_NODE'],
+    defaultApiBase: 'http://localhost:9000/api',
+    paths: {
+      // فرض: API contract مشابه
+      convos: '/chat/conversations/',
+      rooms: '/chat/rooms/',
+      users: '/auth/users/',
+      friend: '/chat/friendship/',
+      me: '/auth/me/',
+      makeContact: '/chat/make-contact/',
+      firstMessage: '/chat/make-contact/',
+      roomMessages: (roomId) => `/chat/messages/${roomId}/`,
+    },
+    ws: {
+      kind: 'raw',
+      wsEnvKey: 'VITE_WS_URL_NODE',
+      defaultWsBase: 'ws://localhost:9000/ws/chat/',
+      tokenParam: 'token',
+    },
+  },
+
+  nest: {
+    key: 'nest',
+    label: 'NestJS',
+    apiBaseEnvKeys: ['VITE_API_BASE_NEST', 'REACT_APP_API_BASE_NEST'],
+    defaultApiBase: 'http://localhost:9100/api',
+    paths: {
+      // اگر Nest همون contract رو داد، همین می‌مونه
+      convos: '/chat/conversations/',
+      rooms: '/chat/rooms/',
+      users: '/auth/users/',
+      friend: '/chat/friendship/',
+      me: '/auth/me/',
+      makeContact: '/chat/make-contact/',
+      firstMessage: '/chat/make-contact/',
+      roomMessages: (roomId) => `/chat/messages/${roomId}/`,
+    },
+    ws: {
+      kind: 'raw',
+      wsEnvKey: 'VITE_WS_URL_NEST',
+      defaultWsBase: 'ws://localhost:9100/ws/chat/',
+      tokenParam: 'token',
+    },
+  },
+
+  django: {
+    key: 'django',
+    label: 'Django',
+    apiBaseEnvKeys: ['VITE_API_BASE_DJANGO', 'REACT_APP_API_BASE_DJANGO'],
+    defaultApiBase: 'http://localhost:8001',
+    paths: {
+      convos: '/chat/conversations/',
+      rooms: '/chat/rooms/',
+      users: '/auth/users/',
+      friend: '/chat/friendship/',
+      me: '/auth/me/',
+      makeContact: null,
+      firstMessage: null,
+      roomMessages: (roomId) => `/chat/messages/${roomId}/`,
+    },
+    ws: {
+      kind: 'raw',
+      wsEnvKey: 'VITE_WS_URL_DJANGO',
+      defaultWsBase: 'ws://localhost:8001/ws/chat/',
+      tokenParam: 'token',
+    },
+  },
+
+  fastapi: {
+    key: 'fastapi',
+    label: 'FastAPI',
+    apiBaseEnvKeys: ['VITE_API_BASE_FASTAPI', 'REACT_APP_API_BASE_FASTAPI'],
+    defaultApiBase: 'http://localhost:8002',
+    paths: {
+      // معمولاً FastAPI endpointها رو مثل Django می‌سازن
+      convos: '/chat/conversations/',
+      rooms: '/chat/rooms/',
+      users: '/auth/users/',
+      friend: '/chat/friendship/',
+      me: '/auth/me/',
+      makeContact: null,
+      firstMessage: null,
+      roomMessages: (roomId) => `/chat/messages/${roomId}/`,
+    },
+    ws: {
+      kind: 'raw',
+      wsEnvKey: 'VITE_WS_URL_FASTAPI',
+      defaultWsBase: 'ws://localhost:8002/ws/chat/',
+      tokenParam: 'token',
+    },
+  },
+};
+
+export const BACKENDS = Object.keys(BACKEND_REGISTRY);
 
 /* ---------- safe localStorage ---------- */
 function safeGetItem(key) {
@@ -25,14 +138,7 @@ function safeSetItem(key, value) {
   } catch {}
 }
 
-/* ---------- join base + path ---------- */
-function joinPath(base, path) {
-  const b = String(base ?? '').replace(/\/+$/, '');
-  const p = String(path ?? '').replace(/^\/+/, '');
-  return b ? `${b}/${p}` : `/${p}`;
-}
-
-/* ---------- env reader (Vite) ---------- */
+/* ---------- env reader ---------- */
 function env(key, fallback = undefined) {
   return (import.meta.env && import.meta.env[key]) ?? fallback;
 }
@@ -41,99 +147,92 @@ function env(key, fallback = undefined) {
 function normalizeBase(val, fallback) {
   const v = (val ?? '').toString().trim();
   if (!v || v === '/' || /^(false|null|undefined|0)$/i.test(v)) return fallback;
-  return v.replace(/\/+$/, ''); // no trailing slash
+  return v.replace(/\/+$/, '');
+}
+
+/* ---------- join base + path ---------- */
+function joinPath(base, path) {
+  const b = String(base ?? '').replace(/\/+$/, '');
+  const p = String(path ?? '').replace(/^\/+/, '');
+  return b ? `${b}/${p}` : `/${p}`;
+}
+
+function isValidBackendKey(k) {
+  return Boolean(k && BACKEND_REGISTRY[String(k).toLowerCase()]);
+}
+
+function pickEnvBase(keys, fallback) {
+  for (const k of keys || []) {
+    const v = env(k);
+    if (v != null && String(v).trim() !== '') return normalizeBase(v, fallback);
+  }
+  return normalizeBase(undefined, fallback);
 }
 
 /* ---------- backend choice ---------- */
 export function getChosenBackend() {
   const saved = safeGetItem(BACKEND_KEY);
-  if (saved && BACKENDS.includes(saved)) return saved;
+  if (isValidBackendKey(saved)) return String(saved).toLowerCase();
 
-  // پیش‌فرض: reverb (Laravel + Reverb)
-  const envDefault = String(env('REACT_APP_BACKEND', 'reverb')).toLowerCase();
-  return BACKENDS.includes(envDefault) ? envDefault : 'reverb';
+  // default: reverb (real-time)
+  const envDefault = String(env('VITE_BACKEND', env('REACT_APP_BACKEND', 'reverb'))).toLowerCase();
+  return isValidBackendKey(envDefault) ? envDefault : 'reverb';
 }
 
-export function setChosenBackend(value) {
+export function setChosenBackend(value, { reload = true } = {}) {
   if (!value) return;
   const v = String(value).toLowerCase();
   if (!BACKENDS.includes(v)) return;
   safeSetItem(BACKEND_KEY, v);
-  if (typeof window !== 'undefined') window.location.reload();
+  if (reload && typeof window !== 'undefined') window.location.reload();
 }
+
 
 /* ---------- build endpoints (ABSOLUTE) ---------- */
 export function buildEndpoints(kind) {
-  const k = String(kind || 'reverb').toLowerCase();
+  const k = isValidBackendKey(kind) ? String(kind).toLowerCase() : 'reverb';
+  const cfg = BACKEND_REGISTRY[k];
 
-  // .env مثال:
-  // REACT_APP_API_BASE_REVERB=http://localhost:8000/api
-  // REACT_APP_API_BASE_DJANGO=http://localhost:8001
-  const baseReverb = normalizeBase(
-    env('REACT_APP_API_BASE_REVERB') || env('REACT_APP_API_BASE_LARAVEL'),
-    'http://localhost:8000/api',
-  );
+  const base = pickEnvBase(cfg.apiBaseEnvKeys, cfg.defaultApiBase);
+  const p = cfg.paths;
 
-  const baseDjango = normalizeBase(
-    env('REACT_APP_API_BASE_DJANGO'),
-    'http://localhost:8000',
-  );
-
-  // ---------- DJANGO ----------
-  if (k === 'django') {
-    return {
-      base: baseDjango,
-      convos: joinPath(baseDjango, '/chat/conversations/'),
-      rooms: joinPath(baseDjango, '/chat/rooms/'),
-      users: joinPath(baseDjango, '/auth/users/'),
-      friend: joinPath(baseDjango, '/chat/friendship/'),
-      me: joinPath(baseDjango, '/auth/me/'),
-
-      makeContact: null,
-      firstMessage: null,
-
-      roomMessages: (roomId) =>
-        joinPath(baseDjango, `/chat/messages/${roomId}/`),
-
-      kind: 'django',
-    };
-  }
-
-  // ---------- LARAVEL + REVERB (default) ----------
   return {
-    base: baseReverb,
-    convos: joinPath(baseReverb, '/chatMeetUp/conversations/'),
-    rooms: joinPath(baseReverb, '/chatMeetUp/chatrooms/'),
-    users: joinPath(baseReverb, '/auth/users/'),
-    friend: joinPath(baseReverb, '/chatMeetUp/friendship'),
-    me: joinPath(baseReverb, '/auth/me'),
+    base,
+    convos: p.convos ? joinPath(base, p.convos) : null,
+    rooms: p.rooms ? joinPath(base, p.rooms) : null,
+    users: p.users ? joinPath(base, p.users) : null,
+    friend: p.friend ? joinPath(base, p.friend) : null,
+    me: p.me ? joinPath(base, p.me) : null,
 
-    // برای باز کردن/ساختن DM
-    makeContact: joinPath(baseReverb, '/chatMeetUp/make-contact'),
-    firstMessage: joinPath(baseReverb, '/chatMeetUp/make-contact'),
+    makeContact: p.makeContact ? joinPath(base, p.makeContact) : null,
+    firstMessage: p.firstMessage ? joinPath(base, p.firstMessage) : null,
 
-    roomMessages: (roomId) =>
-      joinPath(baseReverb, `/chatMeetUp/messages/${roomId}/`),
+    roomMessages:
+      typeof p.roomMessages === 'function'
+        ? (roomId) => joinPath(base, p.roomMessages(roomId))
+        : null,
 
-    kind: 'reverb',
+    kind: cfg.key,
+    label: cfg.label,
+    ws: cfg.ws,
   };
 }
 
-/* ---------- raw WS URL (فقط برای Django) ---------- */
+/* ---------- raw WS URL (only for ws.kind=raw) ---------- */
 export function buildWsUrl(kind, token) {
-  const k = String(kind || 'reverb').toLowerCase();
+  const k = isValidBackendKey(kind) ? String(kind).toLowerCase() : 'reverb';
+  const ws = BACKEND_REGISTRY[k]?.ws;
+  if (!ws || ws.kind !== 'raw') return null;
 
-  // برای Reverb از Echo connector استفاده می‌کنیم، نه buildWsUrl
-  if (k === 'reverb') return null;
-
-  // برای Django:
-  const raw = env('REACT_APP_WS_URL_DJANGO', 'ws://localhost:8000/ws/chat/');
-  const base = normalizeBase(raw, 'ws://localhost:8000/ws/chat');
+  const raw = env(ws.wsEnvKey, ws.defaultWsBase);
+  const base = normalizeBase(raw, ws.defaultWsBase);
   const sep = String(base).includes('?') ? '&' : '?';
+  const param = encodeURIComponent(ws.tokenParam || 'token');
   const t = encodeURIComponent(token || '');
-  return `${base}${sep}token=${t}`;
+  return `${base}${sep}${param}=${t}`;
 }
 
+/* ---------- hook ---------- */
 /* ---------- hook ---------- */
 export function useBackendChoice() {
   const [backendChoice, setBackendChoiceState] = useState(getChosenBackend());
@@ -142,14 +241,20 @@ export function useBackendChoice() {
     const raw =
       typeof eOrValue === 'string' ? eOrValue : eOrValue?.target?.value;
     if (!raw) return;
+
     const v = String(raw).toLowerCase();
+    if (!isValidBackendKey(v)) return;
+
     setBackendChoiceState(v);
-    setChosenBackend(v);
+    setChosenBackend(v, { reload: false }); // ✅ بدون ریفرش
   }, []);
 
-  const effectiveKind = BACKENDS.includes(backendChoice)
-    ? backendChoice
-    : 'reverb';
+  const effectiveKind = isValidBackendKey(backendChoice) ? backendChoice : 'reverb';
 
-  return { backendChoice: effectiveKind, effectiveKind, handleChangeBackend };
+  const backendLabel = useMemo(
+    () => BACKEND_REGISTRY[effectiveKind]?.label || effectiveKind,
+    [effectiveKind],
+  );
+
+  return { backendChoice: effectiveKind, effectiveKind, handleChangeBackend, backendLabel };
 }

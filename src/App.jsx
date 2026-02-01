@@ -16,8 +16,8 @@ import useUserEvents from '@/hooks/useUserEvents';
 import { useGlobalNotify } from '@/hooks/chat/useGlobalNotify';
 
 // lazy pages
-const Register = React.lazy(() => import('@/components/RegisterForm/RegisterForm'));
-const VerifyEmail = React.lazy(() => import('@/components/VerifyEmail/VerifyEmail'));
+const Register = React.lazy(() => import('@/components/auth/RegisterForm/RegisterForm'));
+const VerifyEmail = React.lazy(() => import('@/components/auth/VerifyEmail/VerifyEmail'));
 const ForgotPasswordForm = React.lazy(() => import('@/components/auth/ForgotPasswordForm'));
 const ResetPasswordForm = React.lazy(() => import('@/components/auth/ResetPasswordForm'));
 const HomeChat = React.lazy(() => import('@/components/HomeChat/HomeChat'));

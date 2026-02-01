@@ -3,11 +3,10 @@ import React, { useEffect, useMemo, useReducer, useRef } from 'react';
 import { Container, Row, Col } from 'react-bootstrap';
 import { useDispatch, useSelector } from 'react-redux';
 
-import BackendPicker from '@/components/BackendPicker';
 import LogoutButton from '@/components/auth/LogoutButton';
 import Header from '@/components/Header';
 import ConversationList from '@/components/ConversationList';
-import ChatWindow from '@/components/ChatWindow';
+import ChatWindow from '@/components/chat/ChatWindow/ChatWindow';
 import UserModal from '@/components/UserModal';
 
 import { useBackendChoice, buildEndpoints } from '@/backend/choice';
@@ -86,8 +85,10 @@ export default function HomeChat() {
   const [state, ui] = useReducer(reducer, initialState);
   const { q, roomId, showUsers } = state;
 
-  const { backendChoice, effectiveKind, handleChangeBackend } = useBackendChoice();
-  const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
+  const { effectiveKind } = useBackendChoice();
+const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
+
+
 
   const { bareToken, currentUser, currentUserId } = useAuthBasics();
 
@@ -248,7 +249,6 @@ export default function HomeChat() {
 
   return (
     <Container fluid className="messages-container">
-      <BackendPicker value={backendChoice} onChange={handleChangeBackend} />
 
       <div className="d-flex justify-content-between align-items-center mb-3">
         <h5 className="mb-0">Chat</h5>

@@ -1,63 +1,81 @@
 // src/services/apiSlice.js
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
+import { buildEndpoints, getChosenBackend } from '@/backend/choice';
 
-const API_BASE =
-  import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
+/**
+ * baseQuery پویا:
+ * هر request با توجه به backendChoice، baseUrl جدید می‌گیرد
+ */
+const dynamicBaseQuery = async (args, api, extraOptions) => {
+  const kind = getChosenBackend(); // از localStorage
+  const endpoints = buildEndpoints(kind);
 
-export const apiSlice = createApi({
-  reducerPath: 'api',
+  const rawBase = endpoints?.base || 'http://localhost:8000/api';
+  const baseUrl = rawBase.replace(/\/+$/, '');
 
-  baseQuery: fetchBaseQuery({
-    baseUrl: API_BASE,
+  const baseQuery = fetchBaseQuery({
+    baseUrl,
     prepareHeaders: (headers, { getState }) => {
       const token = getState()?.auth?.token;
-      if (token) {
-        headers.set('Authorization', `Bearer ${token}`);
-      }
+      if (token) headers.set('Authorization', `Bearer ${token}`);
       headers.set('Accept', 'application/json');
       return headers;
     },
-    credentials: 'omit', // چون Bearer token داریم
-  }),
+    credentials: 'omit',
+  });
 
-  tagTypes: ['Me', 'Users', 'Rooms', 'Messages', 'Friends'],
+  return baseQuery(args, api, extraOptions);
+};
 
+export const apiSlice = createApi({
+  reducerPath: 'api',
+  baseQuery: dynamicBaseQuery,
+  tagTypes: ['Me', 'Users', 'Rooms', 'Messages', 'Friends', 'Convos'],
   endpoints: (builder) => ({
-    // --- Auth: me ---
+    // -----------------
+    // Auth / Me
+    // -----------------
     getMe: builder.query({
-      // چون داخل api.php هست ⇒ آدرس واقعی: http://localhost:8000/api/auth/me
-      query: () => '/api/auth/me',
+      // ✅ دیگر "/api" را اینجا نمی‌زنیم؛ buildEndpoints base را درست می‌دهد
+      query: () => '/auth/me',
       providesTags: ['Me'],
     }),
 
-    // --- Users لیست کاربران ---
+    // -----------------
+    // Users
+    // -----------------
     getUsers: builder.query({
-      query: () => '/api/auth/users',
+      query: () => '/auth/users',
       providesTags: ['Users'],
     }),
 
-    // --- Rooms (اگه فعلاً لازم داری) ---
+    // -----------------
+    // Rooms
+    // -----------------
     getRooms: builder.query({
-      // route لاراولت اگر بدون api نوشته شده باشه: Route::get('/chatMeetUp/chatrooms', ...)
-      // آدرس نهایی: http://localhost:8000/api/chatMeetUp/chatrooms
-      query: () => '/api/chatMeetUp/chatrooms',
+      query: () => '/chatMeetUp/chatrooms',
       providesTags: ['Rooms'],
     }),
 
+    // -----------------
+    // Conversations
+    // -----------------
     getConversations: builder.query({
       query: () => '/chatMeetUp/conversations',
+      providesTags: ['Convos'],
     }),
 
-    // --- Messages در یک روم ---
+    // -----------------
+    // Messages
+    // -----------------
     getRoomMessages: builder.query({
-      // نهایی: /api/chatMeetUp/messages/:roomId
-      query: (roomId) => `/api/chatMeetUp/messages/${roomId}`,
+      query: (roomId) => `/chatMeetUp/messages/${roomId}`,
       providesTags: (res, err, roomId) => [{ type: 'Messages', id: roomId }],
     }),
 
     sendMessage: builder.mutation({
       query: ({ roomId, content }) => ({
-        url: `/api/chatMeetUp/messages/${roomId}`,
+        url: `/chatMeetUp/messages/${roomId}`,
         method: 'POST',
         body: { content },
       }),
@@ -67,12 +85,12 @@ export const apiSlice = createApi({
       ],
     }),
 
-    // ✅ Friendship request (اینجا مشکل بود)
+    // -----------------
+    // Friendship
+    // -----------------
     sendFriendRequest: builder.mutation({
       query: ({ to_user_id }) => ({
-        // چون route لاراولت توی api.php هست: Route::post('/chatMeetUp/friendship', ...)
-        // پس آدرس واقعی ⇒ /api/chatMeetUp/friendship
-        url: '/api/chatMeetUp/friendship',
+        url: '/chatMeetUp/friendship',
         method: 'POST',
         body: { to_user_id },
       }),
@@ -81,15 +99,15 @@ export const apiSlice = createApi({
 
     respondFriendRequest: builder.mutation({
       query: ({ friendship_id, action }) => ({
-        url: '/api/chatMeetUp/friendship/respond',   // 👈 خیلی مهم
+        url: '/chatMeetUp/friendship/respond',
         method: 'POST',
         body: { friendship_id, action },
       }),
+      invalidatesTags: ['Friends'],
     }),
   }),
 });
 
-// ✅ همه‌ی hookها رو export کن
 export const {
   useGetMeQuery,
   useGetUsersQuery,
