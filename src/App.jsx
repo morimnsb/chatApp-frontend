@@ -6,22 +6,22 @@ import { useDispatch, useSelector } from 'react-redux';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 
-import LoginPage from '@/components/auth/LoginForm';
-import ProtectedRoute from '@/components/ProtectedRoute';
-import { meThunk, selectBootstrapped } from '@/store/authSlice';
+import LoginPage from '@/features/auth/components/LoginForm.jsx';
+import ProtectedRoute from '@/shared/components/ProtectedRoute';
+import { meThunk, selectBootstrapped } from '@/app/store/authSlice';
 
-import useUserEvents from '@/hooks/useUserEvents';
+import useUserEvents from '@/features/chat/hooks/useUserEvents.js';
 
 // ✅ NEW: global notify hook
-import { useGlobalNotify } from '@/hooks/chat/useGlobalNotify';
+import { useGlobalNotify } from '@/features/chat/hooks/useGlobalNotify.js';
 
 // lazy pages
-const Register = React.lazy(() => import('@/components/auth/RegisterForm/RegisterForm'));
-const VerifyEmail = React.lazy(() => import('@/components/auth/VerifyEmail/VerifyEmail'));
-const ForgotPasswordForm = React.lazy(() => import('@/components/auth/ForgotPasswordForm'));
-const ResetPasswordForm = React.lazy(() => import('@/components/auth/ResetPasswordForm'));
-const HomeChat = React.lazy(() => import('@/components/HomeChat/HomeChat'));
-const ChangePasswordForm = React.lazy(() => import('@/components/auth/ChangePasswordForm'));
+const Register = React.lazy(() => import('@/features/auth/components/RegisterForm.jsx'));
+const VerifyEmail = React.lazy(() => import('@/features/auth/components/VerifyEmail.jsx'));
+const ForgotPasswordForm = React.lazy(() => import('@/features/auth/components/ForgotPasswordForm.jsx'));
+const ResetPasswordForm = React.lazy(() => import('@/features/auth/components/ResetPasswordForm.jsx'));
+const HomeChat = React.lazy(() => import('@/features/chat/components/HomeChat.jsx'));
+const ChangePasswordForm = React.lazy(() => import('@/features/auth/components/ChangePasswordForm.jsx'));
 
 function Splash() {
   return (
@@ -123,3 +123,15 @@ export default function App() {
     </AppShell>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
