@@ -9,7 +9,7 @@ import ConversationList from '@/shared/components/ConversationList';
 import ChatWindow from '@/features/chat/components/ChatWindow.jsx';
 import UserModal from '@/shared/components/UserModal';
 
-import { useBackendChoice, buildEndpoints } from '@/shared/backend/choice';
+import { useBackendChoice, buildEndpoints } from '@/shared/backend';
 import useChatData from '@/features/chat/hooks/useChatData.js';
 import { selectRoom, clearUnreadCount } from '@/features/chat/state/messageActions';
 
@@ -300,6 +300,7 @@ const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
     </Container>
   );
 }
+
 
 
 

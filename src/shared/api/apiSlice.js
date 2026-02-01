@@ -1,6 +1,6 @@
 // src/services/apiSlice.js
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
-import { buildEndpoints, getChosenBackend } from '@/shared/backend/choice';
+import { buildEndpoints, getChosenBackend } from '@/shared/backend';
 
 /**
  * baseQuery پویا:
@@ -118,4 +118,5 @@ export const {
   useGetConversationsQuery,
   useRespondFriendRequestMutation,
 } = apiSlice;
+
 

@@ -5,7 +5,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { toast } from 'react-toastify';
 
 import BackendPicker from '@/shared/components/BackendPicker';
-import { useBackendChoice } from '@/shared/backend/choice';
+import { useBackendChoice } from '@/shared/backend';
 import { apiSlice } from '@/shared/api/apiSlice';
 
 import {
@@ -160,6 +160,7 @@ const LoginPage = () => {
 };
 
 export default LoginPage;
+
 
 
 

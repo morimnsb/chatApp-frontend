@@ -1,6 +1,6 @@
 // src/components/BackendPicker.jsx
 import React from 'react';
-import { BACKENDS, BACKEND_REGISTRY } from '@/shared/backend/choice';
+import { BACKENDS, BACKEND_REGISTRY } from '@/shared/backend';
 
 export default function BackendPicker({ value, onChange }) {
   return (
@@ -22,4 +22,5 @@ export default function BackendPicker({ value, onChange }) {
     </div>
   );
 }
+
 
