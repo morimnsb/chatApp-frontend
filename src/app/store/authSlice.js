@@ -266,13 +266,11 @@ const authSlice = createSlice({
   name: 'auth',
   initialState,
   reducers: {
-    // فقط state را از payload هیدراته می‌کند (مثلاً بعد از read از localStorage در جایی دیگر)
     hydrateAuth(state, action) {
       const payload = action.payload || {};
       Object.assign(state, payload);
     },
 
-    // لاگ‌اوت لوکال (بدون تماس بک‌اند)
     localLogout(state) {
       state.user = null;
       state.token = null;
@@ -283,7 +281,6 @@ const authSlice = createSlice({
       clearAuthStorage();
     },
 
-    // برای کنترل دستی لودینگ (در کامپوننت‌ها در صورت نیاز)
     setLoading(state, action) {
       const isLoading = Boolean(action.payload);
       state.status = isLoading ? 'loading' : 'idle';
@@ -292,15 +289,16 @@ const authSlice = createSlice({
     clearError(state) {
       state.error = null;
     },
-  },
-  extraReducers: (builder) => {
-    // --- register ---
-    builder.addCase(registerThunk.fulfilled, (state, action) => {
-      // اینجا عمداً توکن ست نمی‌کنیم؛ فقط می‌تونی از action.payload توی UI استفاده کنی
-      // مثال: { message, email, otp }
-    });
 
-    // --- verifyEmail (مثل login) ---
+    // ✅ add this
+    markBootstrapped(state) {
+      state.bootstrapped = true;
+    },
+  },
+
+  extraReducers: (builder) => {
+    builder.addCase(registerThunk.fulfilled, () => {});
+
     builder.addCase(verifyEmailThunk.fulfilled, (state, action) => {
       state.user = action.payload.user || null;
       state.token = action.payload.token || null;
@@ -313,7 +311,6 @@ const authSlice = createSlice({
       });
     });
 
-    // --- login ---
     builder.addCase(loginThunk.fulfilled, (state, action) => {
       state.user = action.payload.user || null;
       state.token = action.payload.token || null;
@@ -326,23 +323,26 @@ const authSlice = createSlice({
       });
     });
 
-    // --- me ---
     builder
       .addCase(meThunk.fulfilled, (state, action) => {
         state.user = action.payload || null;
         state.bootstrapped = true;
       })
       .addCase(meThunk.rejected, (state, action) => {
-        // اگر me شکست خورد (مثلاً توکن باطل بود) → کاربر را لاگ‌اوت در نظر بگیر
-        state.user = null;
-        state.bootstrapped = true;
-        state.token = null;
-        state.refreshToken = null;
-        state.expiresAt = null;
-        clearAuthStorage();
-      });
+  state.user = null;
+  state.bootstrapped = true;
 
-    // --- refresh ---
+  // ❌ این‌ها را فعلاً نزن چون باعث logout-loop میشه
+  // state.token = null;
+  // state.refreshToken = null;
+  // state.expiresAt = null;
+  // clearAuthStorage();
+
+  // ✅ فقط error را ذخیره کن
+  state.error = action.payload || action.error?.message || 'Me request failed';
+})
+
+
     builder.addCase(refreshThunk.fulfilled, (state, action) => {
       state.token = action.payload.token || null;
       state.refreshToken = action.payload.refreshToken || null;
@@ -354,9 +354,7 @@ const authSlice = createSlice({
       });
     });
 
-    // --- logoutThunk ---
     builder.addCase(logoutThunk.fulfilled, (state) => {
-      // بعد از لاگ‌اوت بک‌اند، لاگ‌اوت لوکال
       state.user = null;
       state.token = null;
       state.refreshToken = null;
@@ -366,9 +364,6 @@ const authSlice = createSlice({
       clearAuthStorage();
     });
 
-    // ------ addMatcher برای مدیریت عمومی status/error ------
-
-    // همه pendingها → loading + پاک‌کردن error
     builder.addMatcher(
       isAnyOf(
         registerThunk.pending,
@@ -384,7 +379,6 @@ const authSlice = createSlice({
       },
     );
 
-    // fulfilled عمومی → اگر هنوز loading بود، succeeded
     builder.addMatcher(
       isAnyOf(
         registerThunk.fulfilled,
@@ -395,13 +389,10 @@ const authSlice = createSlice({
         logoutThunk.fulfilled,
       ),
       (state) => {
-        if (state.status === 'loading') {
-          state.status = 'succeeded';
-        }
+        if (state.status === 'loading') state.status = 'succeeded';
       },
     );
 
-    // rejected عمومی → failed + ثبت error
     builder.addMatcher(
       isAnyOf(
         registerThunk.rejected,
@@ -413,17 +404,18 @@ const authSlice = createSlice({
       ),
       (state, action) => {
         state.status = 'failed';
-        state.error =
-          action.payload || action.error?.message || 'Unknown error';
+        state.error = action.payload || action.error?.message || 'Unknown error';
       },
     );
   },
 });
 
+
 // ------ Actions ------
 
-export const { hydrateAuth, localLogout, setLoading, clearError } =
+export const { hydrateAuth, localLogout, setLoading, clearError, markBootstrapped } =
   authSlice.actions;
+
 
 // برای راحتی بعضی جاها (اگر می‌خواهی مستقیم استفاده کنی)
 export const { reducer: authReducer } = authSlice;

@@ -1,104 +1,106 @@
-// src/config/realtime.js
+// src/shared/config/realtime.js
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
 Pusher.logToConsole = false;
 
-// ✅ Echo در خیلی از حالت‌ها window.Pusher را می‌خواهد
 try {
   window.Pusher = Pusher;
-} catch (e) {
-  console.warn(e);
-}
+} catch {}
 
 let _echo = null;
-let _echoTokenKey = null;
+let _echoKeySig = null;
 
 function readEnv() {
   const key = import.meta.env.VITE_PUSHER_KEY || 'local';
-  const cluster = import.meta.env.VITE_PUSHER_CLUSTER || 'mt1';
-
   const wsHost = import.meta.env.VITE_PUSHER_HOST || '127.0.0.1';
   const wsPort = Number(import.meta.env.VITE_PUSHER_PORT || 8080);
 
   const forceTLS = String(import.meta.env.VITE_PUSHER_TLS ?? 'false') === 'true';
 
-  // ✅ مهم: auth endpoint باید سمت بک‌اند باشه، نه 5173
   const authEndpoint =
     import.meta.env.VITE_PUSHER_AUTH_ENDPOINT ||
     import.meta.env.VITE_REVERB_AUTH_ENDPOINT ||
-    'http://localhost:8000/api/broadcasting/auth';
+    'http://127.0.0.1:8000/api/broadcasting/auth';
 
-  return { key, cluster, wsHost, wsPort, forceTLS, authEndpoint };
+  const enabledTransports = forceTLS ? ['wss'] : ['ws'];
+
+  return { key, wsHost, wsPort, forceTLS, authEndpoint, enabledTransports };
 }
 
-export function getOrCreateEcho(accessToken) {
+function makeSig(env, accessToken) {
   const tokenStr = accessToken ? String(accessToken) : '';
   const tokenKey = tokenStr ? tokenStr.slice(0, 18) : '';
 
-  if (_echo && _echoTokenKey === tokenKey) return _echo;
+  return [
+    env.key,
+    env.wsHost,
+    env.wsPort,
+    env.forceTLS ? 'tls1' : 'tls0',
+    env.enabledTransports.join(','),
+    env.authEndpoint,
+    tokenKey,
+  ].join('|');
+}
 
-  if (_echo && _echoTokenKey !== tokenKey) {
-    disconnectEcho();
-  }
+export function getOrCreateEcho(accessToken) {
+  const env = readEnv();
+  if (!env.key) return null;
 
-  const { key, cluster, wsHost, wsPort, forceTLS, authEndpoint } = readEnv();
-  if (!key || !cluster) return null;
+  const nextSig = makeSig(env, accessToken);
 
-  _echoTokenKey = tokenKey;
+  if (_echo && _echoKeySig === nextSig) return _echo;
+
+  if (_echo) disconnectEcho('rebuild');
+
+  _echoKeySig = nextSig;
 
   _echo = new Echo({
-    broadcaster: 'pusher',
+    broadcaster: 'reverb',
+    key: env.key,
 
-    key,
-    cluster,
+    wsHost: env.wsHost,
+    wsPort: env.wsPort,
+    wssPort: env.wsPort,
 
-    wsHost,
-    wsPort,
-    wssPort: wsPort,
+    forceTLS: env.forceTLS,
+    encrypted: env.forceTLS,
 
-    forceTLS,
+    enabledTransports: env.enabledTransports,
     disableStats: true,
-    enabledTransports: ['ws', 'wss'],
 
-    // ✅ این باعث میشه Echo خودش به authEndpoint درخواست بده
-    authEndpoint,
+    authEndpoint: env.authEndpoint,
     auth: {
-      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      headers: accessToken
+        ? { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
+        : { Accept: 'application/json' },
     },
   });
 
-  // برای usePresence که window.__echo می‌خواند
   try {
     window.__echo = _echo;
-  } catch (e) {
-    console.warn(e);
-  }
+  } catch {}
 
   return _echo;
 }
 
-export function disconnectEcho() {
+export function disconnectEcho(reason = 'manual') {
   try {
     _echo?.leaveAllChannels?.();
-  } catch (e) {
-    console.warn(e);
-  }
+  } catch {}
 
   try {
     _echo?.disconnect?.();
-  } catch (e) {
-    console.warn(e);
-  }
+  } catch {}
 
   _echo = null;
-  _echoTokenKey = null;
+  _echoKeySig = null;
 
   try {
     window.__echo = null;
-  } catch (e) {
-    console.warn(e);
-  }
+  } catch {}
+
+  // console.log('[realtime] disconnectEcho', reason);
 }
 
 export function getEchoUnsafe() {

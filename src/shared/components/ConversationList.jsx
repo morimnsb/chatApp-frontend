@@ -1,4 +1,4 @@
-// src/components/ConversationList.jsx
+// src/shared/components/ConversationList.jsx
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { ListGroup, Button, Spinner } from 'react-bootstrap';
 import axios from 'axios';
@@ -8,7 +8,6 @@ import { formatTime } from '@/shared/utils/formatTime';
 import profilephoto1 from '@/assets/images/message/profilephoto1.png';
 import './ConversationList.css';
 
-// ✅ NEW slice actions
 import { setIndividualMessages, setGroupMessages } from '@/features/chat/state/messageActions';
 
 const DEV = import.meta.env.DEV === true;
@@ -16,14 +15,9 @@ const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 const log = (...a) => DEBUG && console.log('[ConversationList]', ...a);
 
 const API = (import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000');
-
-// ✅ IMPORTANT: change this if your endpoint differs
 const FETCH_URL = `${API}/api/chatMeetUp/conversations/`;
 
 const safeArr = (v) => (Array.isArray(v) ? v : []);
-const toStr = (v) => (v == null ? '' : String(v));
-const eqId = (a, b) => a != null && b != null && toStr(a) === toStr(b);
-
 const clip = (s, n = 38) => {
   const t = String(s || '').trim();
   if (!t) return '';
@@ -44,11 +38,10 @@ const inferIsGroup = (x) =>
       x?.isGroup ??
       x?.room?.is_group ??
       x?.room?.isGroup ??
-      (x?.name && x?.partnerId == null) // fallback weak signal
+      (x?.name && x?.partnerId == null)
   );
 
 export default function ConversationList({
-  // ✅ optional props (اگر parent فیلتر می‌کنه)
   filteredIndividualMessages,
   filteredGroupMessages,
 
@@ -57,10 +50,12 @@ export default function ConversationList({
   selectedRoom,
   typingIndicators = {},
   onRespondFriendRequest,
+
+  // ✅ from presence-global
+  onlineUsers = [],
 }) {
   const dispatch = useDispatch();
 
-  // ✅ read from Redux as the single source of truth
   const { storeDM, storeGRP } = useSelector(
     (state) => ({
       storeDM: state.messages?.individualMessages || [],
@@ -75,7 +70,15 @@ export default function ConversationList({
   const [fetching, setFetching] = useState(false);
   const [fetchErr, setFetchErr] = useState('');
 
-  // ✅ pick data: props (if provided) else store
+  // ✅ Presence -> Set for fast lookup
+  const onlineSet = useMemo(() => {
+    const s = new Set();
+    safeArr(onlineUsers).forEach((u) => {
+      if (u?.id != null) s.add(String(u.id));
+    });
+    return s;
+  }, [onlineUsers]);
+
   const individualMessages = useMemo(() => {
     const fromProps = safeArr(filteredIndividualMessages);
     return fromProps.length ? fromProps : safeArr(storeDM);
@@ -91,19 +94,36 @@ export default function ConversationList({
     [typingIndicators]
   );
 
-  // ✅ FETCH conversations on mount + when user/token changes
+  // =========================
+  // ✅ SAFE FETCH (no spam)
+  // =========================
   const didFetchRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const abortRef = useRef(null);
+
   const fetchConversations = useCallback(async () => {
+    if (inFlightRef.current) {
+      log('FETCH skip (inFlight)');
+      return;
+    }
+
     const token = localStorage.getItem('access_token');
     if (!token) {
       setFetchErr('Missing access token (not logged in)');
       return;
     }
 
-    setFetching(true);
-    setFetchErr('');
+    // cancel previous if any
+    try {
+      abortRef.current?.abort?.();
+    } catch {}
 
     const controller = new AbortController();
+    abortRef.current = controller;
+
+    inFlightRef.current = true;
+    setFetching(true);
+    setFetchErr('');
 
     try {
       log('FETCH start', { url: FETCH_URL });
@@ -117,7 +137,6 @@ export default function ConversationList({
       });
 
       const data = res?.data;
-      // پترن‌های مختلف پاسخ
       const list =
         safeArr(data?.results) ||
         safeArr(data?.data) ||
@@ -125,7 +144,6 @@ export default function ConversationList({
         safeArr(data) ||
         [];
 
-      // ✅ split to dm/group
       const dm = [];
       const grp = [];
 
@@ -134,7 +152,6 @@ export default function ConversationList({
         else dm.push(item);
       }
 
-      // ✅ store
       dispatch(setIndividualMessages(dm));
       dispatch(setGroupMessages(grp));
 
@@ -142,72 +159,51 @@ export default function ConversationList({
 
       log('FETCH ok', { total: list.length, dm: dm.length, grp: grp.length });
     } catch (e) {
-      const msg =
-        e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED'
-          ? 'Fetch canceled'
-          : e?.response?.data
-          ? typeof e.response.data === 'string'
-            ? e.response.data
-            : JSON.stringify(e.response.data)
-          : e?.message || 'Fetch failed';
-      setFetchErr(msg);
+      const isCanceled =
+        e?.name === 'CanceledError' ||
+        e?.code === 'ERR_CANCELED' ||
+        e?.name === 'AbortError';
+
+      const msg = isCanceled
+        ? 'Fetch canceled'
+        : e?.response?.data
+        ? typeof e.response.data === 'string'
+          ? e.response.data
+          : JSON.stringify(e.response.data)
+        : e?.message || 'Fetch failed';
+
+      if (!isCanceled) setFetchErr(msg);
       log('FETCH error', msg, e);
     } finally {
+      inFlightRef.current = false;
       setFetching(false);
     }
-
-    return () => controller.abort();
   }, [dispatch]);
 
   useEffect(() => {
-    // ✅ اگر از props دیتای کامل میاد، مجبور نیستیم fetch کنیم
     const propsHasData =
       safeArr(filteredIndividualMessages).length > 0 || safeArr(filteredGroupMessages).length > 0;
 
-    // ✅ اگر store خالیه یا هنوز fetch نکردیم → fetch
-    const storeEmpty = safeArr(storeDM).length === 0 && safeArr(storeGRP).length === 0;
+    const storeHasData = safeArr(storeDM).length > 0 || safeArr(storeGRP).length > 0;
 
+    // اگر parent داده می‌دهد → هیچ fetch
     if (propsHasData) return;
-    if (!didFetchRef.current || storeEmpty) {
-      fetchConversations();
-    }
-  }, [
-    fetchConversations,
-    filteredIndividualMessages,
-    filteredGroupMessages,
-    storeDM,
-    storeGRP,
-  ]);
 
-  // debug snapshot
-  const prevSig = useRef('');
-  useEffect(() => {
-    if (!DEBUG) return;
-    const sigObj = {
-      selectedRoom,
-      dmCount: individualMessages.length,
-      groupCount: groupMessages.length,
-      topDM: individualMessages[0]
-        ? {
-            roomId: getRoomId(individualMessages[0]),
-            name:
-              individualMessages[0]?.first_name ||
-              individualMessages[0]?.name ||
-              individualMessages[0]?.email ||
-              null,
-            lastAt: individualMessages[0]?.last_message_at || null,
-          }
-        : null,
-      topGroup: groupMessages[0]
-        ? { id: groupMessages[0]?.id ?? null, name: groupMessages[0]?.name ?? null }
-        : null,
+    // اگر store پر است → هیچ fetch
+    if (storeHasData) return;
+
+    // فقط یک بار در عمر این mount
+    if (didFetchRef.current) return;
+
+    didFetchRef.current = true;
+    fetchConversations();
+
+    return () => {
+      try {
+        abortRef.current?.abort?.();
+      } catch {}
     };
-    const sig = JSON.stringify(sigObj);
-    if (sig !== prevSig.current) {
-      prevSig.current = sig;
-      console.log('[ConversationList][TRACE]', sigObj);
-    }
-  }, [DEBUG, selectedRoom, individualMessages, groupMessages]);
+  }, [fetchConversations, filteredIndividualMessages, filteredGroupMessages, storeDM, storeGRP]);
 
   const handleCreateGroup = useCallback(async () => {
     setCreating(true);
@@ -229,13 +225,16 @@ export default function ConversationList({
 
       if (res.data?.room?.id) {
         handleSelectChat(res.data.room.id);
-        // ✅ refresh conversations after create
+        // ✅ manual refresh once
+        didFetchRef.current = false;
         fetchConversations();
       }
     } catch (e) {
       log('create group error', e);
       if (e?.response?.data) {
-        setCreateError(typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data));
+        setCreateError(
+          typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data)
+        );
       } else {
         setCreateError('Server error while creating group');
       }
@@ -246,9 +245,11 @@ export default function ConversationList({
 
   return (
     <ListGroup className="message-list-wrapper">
-      {/* ✅ Fetch status bar */}
       {(fetching || fetchErr) && (
-        <ListGroup.Item className="list-group-header" style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <ListGroup.Item
+          className="list-group-header"
+          style={{ display: 'flex', gap: 10, alignItems: 'center' }}
+        >
           {fetching ? (
             <>
               <Spinner as="span" animation="border" size="sm" /> <span>Loading conversations…</span>
@@ -257,7 +258,15 @@ export default function ConversationList({
             <>
               <span style={{ color: 'crimson' }}>Fetch error:</span>
               <span style={{ fontSize: 12 }}>{fetchErr}</span>
-              <Button size="sm" variant="outline-primary" onClick={fetchConversations} style={{ marginLeft: 'auto' }}>
+              <Button
+                size="sm"
+                variant="outline-primary"
+                onClick={() => {
+                  didFetchRef.current = false;
+                  fetchConversations();
+                }}
+                style={{ marginLeft: 'auto' }}
+              >
                 Retry
               </Button>
             </>
@@ -265,7 +274,6 @@ export default function ConversationList({
         </ListGroup.Item>
       )}
 
-      {/* ----------------- INDIVIDUAL ----------------- */}
       <ListGroup.Item disabled className="list-group-header">
         INDIVIDUAL MESSAGES
       </ListGroup.Item>
@@ -280,11 +288,15 @@ export default function ConversationList({
 
           const lastTime =
             convo?.last_message_at ||
-            (typeof lastMsgObj === 'object' ? (lastMsgObj?.created_at || lastMsgObj?.timestamp) : null) ||
+            (typeof lastMsgObj === 'object' ? lastMsgObj?.created_at || lastMsgObj?.timestamp : null) ||
             null;
 
           const displayName =
-            convo?.first_name || convo?.firstName || convo?.name || convo?.email || `User #${userId ?? '?'}`;
+            convo?.first_name ||
+            convo?.firstName ||
+            convo?.name ||
+            convo?.email ||
+            `User #${userId ?? '?'}`;
 
           const avatar = convo?.photo || convo?.avatar || profilephoto1;
           const isActive = Number(selectedRoom) === Number(roomId);
@@ -295,15 +307,17 @@ export default function ConversationList({
           const isFriendReqIncoming = friendshipStatus === 'pending_incoming';
           const isFriendReqOutgoing = friendshipStatus === 'pending_outgoing';
 
-          const isSelf =
-            currentUser?.id && userId != null && Number(currentUser.id) === Number(userId);
+          const isSelf = currentUser?.id && userId != null && Number(currentUser.id) === Number(userId);
 
           let subtitle = '';
           if (isFriendReqIncoming) subtitle = 'sent you a friend request';
           else if (isFriendReqOutgoing) subtitle = 'Friend request sent';
           else subtitle = clip(lastMsgText, 60);
 
-          const inlinePreview = !isFriendReqIncoming && !isFriendReqOutgoing ? clip(lastMsgText, 28) : '';
+          const inlinePreview =
+            !isFriendReqIncoming && !isFriendReqOutgoing ? clip(lastMsgText, 28) : '';
+
+          const isOnline = userId != null ? onlineSet.has(String(userId)) : false;
 
           return (
             <ListGroup.Item
@@ -321,11 +335,9 @@ export default function ConversationList({
                 }}
               >
                 <div className="message-content">
-                  <img
-                    src={avatar}
-                    alt={displayName}
-                    className={`profile-img ${convo?.is_online ? 'is-online' : 'is-offline'}`}
-                  />
+                  <div className={`avatar-ring ${isOnline ? 'ring-online' : 'ring-offline'}`}>
+                    <img src={avatar} alt={displayName} className="profile-img" />
+                  </div>
                 </div>
 
                 <div className="message-body">
@@ -402,7 +414,6 @@ export default function ConversationList({
         <ListGroup.Item className="no-messages">No individual messages available</ListGroup.Item>
       )}
 
-      {/* ----------------- GROUP HEADER + BUTTON ----------------- */}
       <ListGroup.Item className="list-group-header group-header-row">
         <span>GROUP MESSAGES</span>
 
@@ -430,7 +441,6 @@ export default function ConversationList({
         </ListGroup.Item>
       )}
 
-      {/* ----------------- GROUP LIST ----------------- */}
       {groupMessages.length > 0 ? (
         groupMessages.map((room) => {
           const roomId = room?.id ?? null;
@@ -461,7 +471,9 @@ export default function ConversationList({
                 }}
               >
                 <div className="message-content">
-                  <img src={room?.photo || profilephoto1} alt={name} className="profile-img" />
+                  <div className="avatar-ring ring-group">
+                    <img src={room?.photo || profilephoto1} alt={name} className="profile-img" />
+                  </div>
                 </div>
 
                 <div className="message-body">
@@ -496,6 +508,3 @@ export default function ConversationList({
     </ListGroup>
   );
 }
-
-
-

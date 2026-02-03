@@ -86,9 +86,7 @@ export default function HomeChat() {
   const { q, roomId, showUsers } = state;
 
   const { effectiveKind } = useBackendChoice();
-const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
-
-
+  const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
 
   const { bareToken, currentUser, currentUserId } = useAuthBasics();
 
@@ -98,7 +96,7 @@ const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
     currentUserId,
   });
 
-  // ✅ useChatData خودش fetch می‌کند (دیگر اینجا retry خودکار نمی‌زنیم)
+  // ✅ useChatData خودش fetch می‌کند
   const { retryRooms, retryConvos } = useChatData({ endpoints, accessToken: bareToken });
 
   // ✅ store debug
@@ -120,6 +118,7 @@ const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
     setSelectedRoom: (id) => ui({ type: 'SELECT_ROOM', roomId: id }),
   });
 
+  // ✅ Presence (online users)
   const { onlineUsers, connState } = usePresence({
     backendKind: effectiveKind,
     token: bareToken,
@@ -127,6 +126,7 @@ const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
     onGlobalNotification: onGlobalNotif,
   });
 
+  // (Optional) still keep your local is_online enrichment
   const onlineIdSet = useMemo(() => {
     const set = new Set();
     (Array.isArray(onlineUsers) ? onlineUsers : []).forEach((u) => {
@@ -249,7 +249,6 @@ const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
 
   return (
     <Container fluid className="messages-container">
-
       <div className="d-flex justify-content-between align-items-center mb-3">
         <h5 className="mb-0">Chat</h5>
         <LogoutButton />
@@ -268,6 +267,8 @@ const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
               typingIndicators={typingIndicators}
               currentUser={currentUser}
               onRespondFriendRequest={handleRespondFriendRequest}
+              // ✅ NEW: ring source of truth
+              onlineUsers={onlineUsers}
             />
           </Gate>
         </Col>
@@ -300,18 +301,3 @@ const endpoints = useMemo(() => buildEndpoints(effectiveKind), [effectiveKind]);
     </Container>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

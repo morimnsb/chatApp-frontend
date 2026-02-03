@@ -1,221 +1,141 @@
-// src/hooks/chat/usePresence.js
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import useGlobalWebSocket from '@/features/chat/hooks/useGlobalWebSocket.js';
-import { getOrCreateEcho, getEchoUnsafe } from '@/shared/config/realtime.js';
+// src/features/chat/hooks/usePresence.js
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { getOrCreateEcho } from '@/shared/config/realtime.js';
 
-const PRESENCE_NAME = 'presence.global';
+const DEV = import.meta.env.DEV === true;
+const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+const log = (...a) => DEBUG && console.log('[usePresence]', ...a);
 
-const DEBUG = import.meta.env.DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
-const mkLoggers = (id) => {
-  const p = `[usePresence#${id}]`;
-  return {
-    log: (...a) => console.log(p, ...a),
-    dlog: (...a) => DEBUG && console.log(`${p}[DBG]`, ...a),
-    dwarn: (...a) => DEBUG && console.warn(`${p}[WRN]`, ...a),
-  };
+const PRESENCE_NAME = 'global';
+
+const toIdStr = (u) => {
+  const id = u?.id ?? u?.user_id ?? u?.user?.id ?? u;
+  return id == null ? null : String(id);
 };
 
-function safePreview(x, n = 220) {
-  try {
-    const s = JSON.stringify(x);
-    return s.length > n ? s.slice(0, n) + '…' : s;
-  } catch {
-    return String(x);
-  }
-}
+export function usePresence({
+  backendKind,
+  token,
+  currentUserId,
+  onGlobalNotification, // optional: forwarded global notify
+} = {}) {
+  const isReverb = String(backendKind || '').toLowerCase() === 'reverb';
+  const hasToken = Boolean(token);
+  const hasUser = Number(currentUserId) > 0;
 
-export function usePresence({ backendKind, token, currentUserId, onGlobalNotification }) {
   const [onlineUsers, setOnlineUsers] = useState([]);
+  const [connState, setConnState] = useState('unknown');
 
-  // ✅ instance id برای تشخیص mount دوباره / چند instance
-  const instanceIdRef = useRef(Math.random().toString(16).slice(2));
-  const { log, dlog, dwarn } = useRef(mkLoggers(instanceIdRef.current)).current;
+  const didJoinRef = useRef(false);
+  const lastKeyRef = useRef(null);
 
-  const isReverb = useMemo(
-    () => String(backendKind || '').toLowerCase() === 'reverb',
-    [backendKind],
-  );
+  const key = useMemo(() => {
+    if (!isReverb || !hasToken || !hasUser) return null;
+    const tk = String(token).slice(0, 18);
+    return `reverb|presence|${currentUserId}|${tk}`;
+  }, [isReverb, hasToken, hasUser, currentUserId, token]);
 
-  // 👇 برای اینکه cleanup لاگ stale نباشه
-  const onlineCountRef = useRef(0);
   useEffect(() => {
-    onlineCountRef.current = onlineUsers?.length || 0;
-  }, [onlineUsers]);
+    if (!key) return;
 
-  dlog('render', {
-    backendKind,
-    isDev: import.meta.env.DEV === true,
-    hasToken: Boolean(token),
-    currentUserId,
-    onlineCount: onlineUsers?.length || 0,
-  });
-
-  useGlobalWebSocket({
-    backendKind,
-    token,
-    currentUserId,
-    enableGlobalNotifications: true,
-    handleGlobalNotification: onGlobalNotification,
-  });
-
-  const joinedRef = useRef(false);
-  const chRef = useRef(null);
-  const joinAttemptsRef = useRef(0);
-
-  const leavePresence = useCallback((echo, reason = 'cleanup') => {
-    try {
-      if (joinedRef.current) {
-        dlog('echo.leave()', { presence: PRESENCE_NAME, reason });
-        echo.leave(PRESENCE_NAME);
-      } else {
-        dlog('skip leave (not joined)', { reason });
-      }
-    } catch (e) {
-      dwarn('echo.leave failed', e);
-    } finally {
-      joinedRef.current = false;
-      chRef.current = null;
+    // اگر key عوض شد، state ریست بشه
+    if (lastKeyRef.current && lastKeyRef.current !== key) {
       setOnlineUsers([]);
+      didJoinRef.current = false;
     }
-  }, [dlog, dwarn]);
+    lastKeyRef.current = key;
+  }, [key]);
 
-  const joinPresence = useCallback((echo, reason = 'unknown') => {
-    if (joinedRef.current) {
-      dlog('joinPresence skipped (already joined) ✅', { reason });
-      return;
-    }
+  // --- connection state (debug) ---
+  useEffect(() => {
+    if (!key) return;
+
+    const echo = getOrCreateEcho(token);
+    if (!echo) return;
 
     const conn = echo?.connector?.pusher?.connection;
-    dlog('joinPresence called', {
-      reason,
-      connState: conn?.state,
-      socketId: conn?.socket_id,
-      joinAttempts: joinAttemptsRef.current,
-    });
+    if (!conn) return;
 
+    const sync = () => setConnState(conn.state || 'unknown');
+    sync();
+
+    const onState = (st) => {
+      setConnState(st?.current || conn.state || 'unknown');
+      log('pusher state_change', st);
+    };
+
+    conn.bind?.('state_change', onState);
+    conn.bind?.('connected', sync);
+    conn.bind?.('disconnected', sync);
+
+    return () => {
+      try {
+        conn.unbind?.('state_change', onState);
+        conn.unbind?.('connected', sync);
+        conn.unbind?.('disconnected', sync);
+      } catch {}
+    };
+  }, [key, token]);
+
+  // --- presence join (single join) ---
+  useEffect(() => {
+    if (!key) return;
+
+    const echo = getOrCreateEcho(token);
+    if (!echo) return;
+
+    if (didJoinRef.current) return;
+    didJoinRef.current = true;
+
+    log('joining presence...', { name: PRESENCE_NAME, reason: 'initial.connected' });
+
+    let ch;
     try {
-      joinAttemptsRef.current += 1;
+      ch = echo.join(PRESENCE_NAME);
 
-      const ch = echo.join(PRESENCE_NAME);
-      chRef.current = ch;
-      joinedRef.current = true; // ✅ فقط بعد از join موفق
-
-      dlog('echo.join() OK ✅', { presence: PRESENCE_NAME });
-
-      ch.error?.((e) => dwarn('presence error', e));
-
+      // ✅ snapshot (initial list)
       ch.here((users) => {
         const arr = Array.isArray(users) ? users : [];
         setOnlineUsers(arr);
-        dlog('here', { count: arr.length, usersPreview: safePreview(arr) });
+        log('here ✅', { count: arr.length });
       });
 
+      // ✅ joining
       ch.joining((user) => {
-        dlog('joining', { userPreview: safePreview(user) });
+        const id = toIdStr(user);
+        if (!id) return;
         setOnlineUsers((prev) => {
           const arr = Array.isArray(prev) ? prev : [];
-          if (!user?.id) return arr;
-          if (arr.some((u) => Number(u.id) === Number(user.id))) return arr;
+          if (arr.some((x) => toIdStr(x) === id)) return arr;
           return [...arr, user];
         });
       });
 
+      // ✅ leaving
       ch.leaving((user) => {
-        dlog('leaving', { userPreview: safePreview(user) });
+        const id = toIdStr(user);
+        if (!id) return;
         setOnlineUsers((prev) => {
           const arr = Array.isArray(prev) ? prev : [];
-          if (!user?.id) return arr;
-          return arr.filter((u) => Number(u.id) !== Number(user.id));
+          return arr.filter((x) => toIdStr(x) !== id);
         });
       });
+
+      log('presence joined ✅', { name: PRESENCE_NAME });
     } catch (e) {
-      joinedRef.current = false;
-      chRef.current = null;
-      dwarn('join failed', e);
+      log('presence join failed', e);
+      didJoinRef.current = false;
     }
-  }, [dlog, dwarn]);
-
-  useEffect(() => {
-    log('effect mount', { isReverb, currentUserId });
-
-    // reset وقتی backend عوض میشه
-    if (!isReverb) {
-      dlog('not reverb -> reset');
-      joinedRef.current = false;
-      chRef.current = null;
-      setOnlineUsers([]);
-      return () => log('effect cleanup (not reverb)');
-    }
-
-    // بدون توکن یا یوزر، حضور معنی نداره
-    if (!token || !currentUserId) {
-      dlog('missing token/user -> reset', { hasToken: Boolean(token), currentUserId });
-      joinedRef.current = false;
-      chRef.current = null;
-      setOnlineUsers([]);
-      return () => log('effect cleanup (missing token/user)');
-    }
-
-    // ✅ Echo singleton: اگر قبلاً ساخته شده استفاده کن، اگر نه بساز
-    const echo = getEchoUnsafe() || getOrCreateEcho(token);
-
-    if (!echo) {
-      dwarn('no echo (getOrCreateEcho returned null) — check env');
-      return () => log('effect cleanup (no echo)');
-    }
-
-    const conn = echo?.connector?.pusher?.connection;
-    if (!conn) {
-      dwarn('no conn in effect');
-      return () => log('effect cleanup (no conn)');
-    }
-
-    const onConnected = () => {
-      dlog('conn connected → joinPresence');
-      joinPresence(echo, 'conn.connected');
-    };
-
-    // اگر همین الان وصل است
-    if (conn.state === 'connected') {
-      joinPresence(echo, 'conn.state===connected');
-    }
-
-    dlog('binding conn.connected listener');
-    conn.bind('connected', onConnected);
 
     return () => {
-      log('effect cleanup', {
-        joined: joinedRef.current,
-        onlineCount: onlineCountRef.current,
-        connState: conn?.state,
-        socketId: conn?.socket_id,
-      });
-
+      // مهم: leave فقط وقتی unmount واقعی شد
       try {
-        conn.unbind('connected', onConnected);
-        dlog('unbind connected OK');
-      } catch (e) {
-        dwarn('unbind connected failed', e);
-      }
-
-      leavePresence(echo, 'effect.cleanup');
+        echo.leave(PRESENCE_NAME);
+      } catch {}
+      didJoinRef.current = false;
+      setOnlineUsers([]);
     };
-    // ✅ token لازم است چون Echo ممکن است با آن ساخته شود
-  }, [isReverb, token, currentUserId, joinPresence, leavePresence, log, dlog, dwarn]);
+  }, [key, token]);
 
-  // ✅ لاگ تغییر count
-  const lastCountRef = useRef(-1);
-  useEffect(() => {
-    if (!DEBUG) return;
-    const c = onlineUsers?.length || 0;
-    if (c !== lastCountRef.current) {
-      lastCountRef.current = c;
-      dlog('onlineCount changed', { count: c });
-    }
-  }, [onlineUsers, dlog]);
-
-  return { onlineUsers };
+  return { onlineUsers, connState };
 }
-
-
-

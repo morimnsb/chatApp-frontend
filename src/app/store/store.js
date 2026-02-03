@@ -143,25 +143,5 @@ export const store = configureStore({
 
 // ✅ RTK Query: enable refetchOnFocus/refetchOnReconnect
 setupListeners(store.dispatch);
-
-// ---------- HMR (Vite) ----------
-if (DEV && import.meta.hot) {
-  import.meta.hot.accept(
-    [
-      '@/store/authSlice',
-      '@/reducers/messageReducer',
-      '@/store/wsReducer',
-      '@/store/messageEntitySlice',
-      '@/services/apiSlice',
-    ],
-    () => {
-      store.replaceReducer(createRootReducer());
-    },
-  );
-}
-
 export default store;
-
-
-
 

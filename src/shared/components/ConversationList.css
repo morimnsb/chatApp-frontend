@@ -1,203 +1,72 @@
-Variables
-:root {
-  --primary-color: #007bff;
-  --secondary-color: #6c757d;
-  --text-color: #343a40;
-  --muted-text-color: #6c757d;
-  --background-color: #ffffff;
-  --hover-background-color: #f8f9fa;
-  --active-background-color: #e9ecef;
-  --online-color: #28a745;
-  --unread-badge-bg: #dc3545;
-  --font-small: 0.85rem;
-  --font-extra-small: 0.75rem;
-  --border-radius: 50%;
-  --spacing-sm: 5px;
-  --spacing-md: 10px;
-}
+/* src/shared/components/ConversationList.css */
 
-/* Message Row */
-.message-row {
-  display: flex;
+/* --- Avatar ring wrapper --- */
+.avatar-ring {
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  display: inline-flex;
   align-items: center;
-  padding: var(--spacing-md);
-  transition: background-color 0.2s ease;
-}
-
-.message-list-item:hover {
-  background-color: var(--hover-background-color);
-  cursor: pointer;
-}
-
-.message-list-item.active {
-  background-color: var(--active-background-color);
-}
-
-/* Profile Image and Online Status */
-.message-content {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin-right: 10px; /* Space between image and text */
-}
-
-.profile-img {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  object-fit: cover; /* Ensure the image covers the entire area */
-}
-
-.online-status {
-  position: absolute;
-  bottom: 0;  /* Adjust this to position the circle exactly where you want */
-  right: 0;   /* Adjust this to position the circle exactly where you want */
-  width: 10px;  /* Adjust the size as needed */
-  height: 10px;
-  background-color: green;
-  border-radius: 50%;
-  border: 2px solid white; /* Creates a small border around the status */
-}
-
-
-/* Message Body */
-.message-body {
-  flex-grow: 1;
-  display: flex;
-  flex-direction: column;
   justify-content: center;
+  padding: 2px; /* ring thickness */
+  box-sizing: border-box;
 }
 
-.message-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.user-name,
-.room-name {
-  font-weight: 600;
-  color: var(--text-color);
-  font-size: 1rem;
-}
-
-.time-text {
-  font-size: var(--font-small);
-  color: var(--muted-text-color);
-  white-space: nowrap;
-}
-
-.message-details {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: var(--spacing-sm);
-}
-
-.subtext {
-  color: var(--muted-text-color);
-  font-size: var(--font-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-right: var(--spacing-md);
-}
-
-.unread_count {
-  background-color: var(--unread-badge-bg);
-  color: var(--background-color);
-  border-radius: 12px;
-  padding: 2px 8px;
-  font-size: var(--font-extra-small);
-  min-width: 20px;
-  text-align: center;
-}
-
-/* Responsive Design */
-@media (max-width: 576px) {
-  .profile-img {
-    width: 35px;
-    height: 35px;
-  }
-
-  .user-name,
-  .room-name {
-    font-size: 0.9rem;
-  }
-
-  .time-text,
-  .subtext {
-    font-size: 0.75rem;
-  }
-}
-/* online/offline ring on avatars */
-.profile-img.is-online {
-  border: 2px solid rgba(34, 197, 94, 0.95); /* green */
-  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.18);
-}
-
-.profile-img.is-offline {
-  border: 2px solid rgba(239, 68, 68, 0.95); /* red */
-  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.16);
-}
-/* Avatar border status */
-.avatar-wrap {
+/* avatar itself */
+.profile-img {
   width: 42px;
   height: 42px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-}
-
-.avatar-wrap .profile-img {
-  width: 34px;
-  height: 34px;
   border-radius: 999px;
   object-fit: cover;
   display: block;
 }
 
-/* green ring */
-.avatar-wrap.online {
-  border: 2px solid rgba(34, 197, 94, 0.95);
-  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
+/* Online / Offline rings */
+.ring-online {
+  background: conic-gradient(from 0deg, #29d36a, #22c55e, #29d36a);
 }
 
-/* red ring */
-.avatar-wrap.offline {
-  border: 2px solid rgba(239, 68, 68, 0.95);
-  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.10);
+.ring-offline {
+  background: conic-gradient(from 0deg, #6b7280, #9ca3af, #6b7280);
 }
 
-/* optional for group / unknown */
-.avatar-wrap.neutral {
-  border: 2px solid rgba(255,255,255,0.18);
-  box-shadow: none;
+/* groups: neutral ring */
+.ring-group {
+  background: conic-gradient(from 0deg, #3b82f6, #60a5fa, #3b82f6);
 }
-/* ConversationList.css */
+/* src/shared/components/ConversationList.css */
 
-.message-header {
-  display: flex;
+/* --- Avatar ring wrapper --- */
+.avatar-ring {
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: center;
+  padding: 2px; /* ring thickness */
+  box-sizing: border-box;
 }
 
-.title-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0; /* مهم برای ellipsis */
-  flex: 1;
+/* avatar itself */
+.profile-img {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  object-fit: cover;
+  display: block;
 }
 
-.last-inline {
-  opacity: 0.75;
-  font-size: 0.9rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-  flex: 1;
+/* Online / Offline rings */
+.ring-online {
+  background: conic-gradient(from 0deg, #29d36a, #22c55e, #29d36a);
+}
+
+.ring-offline {
+  background: conic-gradient(from 0deg, #6b7280, #9ca3af, #6b7280);
+}
+
+/* groups: neutral ring */
+.ring-group {
+  background: conic-gradient(from 0deg, #3b82f6, #60a5fa, #3b82f6);
 }
