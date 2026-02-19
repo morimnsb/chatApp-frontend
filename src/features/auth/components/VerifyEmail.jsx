@@ -1,95 +1,155 @@
-// src/components/VerifyEmail/VerifyEmail.jsx
-import React, { useEffect, useState } from 'react';
-import { useDispatch } from 'react-redux';
-import { useNavigate } from 'react-router-dom';
-import { verifyEmailApi } from '@/shared/services/authService';
-import { hydrateAuth } from '@/app/store/authSlice'; // همونی که داری
+// src/features/auth/components/VerifyEmail.jsx
+import React, { useEffect, useMemo, useState } from "react";
+import { Button, Container, Form } from "react-bootstrap";
+import { toast } from "react-toastify";
+import { verifyEmailApi } from "@/shared/services/authService";
+
+import { useDispatch } from "react-redux";
+import { useNavigate } from "react-router-dom";
+import { hydrateAuth, meThunk } from "@/app/store/authSlice";
+import { hardResetSocket } from "@/shared/ws/socketClient";
+
+const DEV = import.meta.env.DEV === true;
+const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || "") === "true";
+const log = (...a) => DEBUG && console.log("[VerifyEmail]", ...a);
+
+const normEmail = (s) => String(s || "").trim().toLowerCase();
+const normOtp = (s) => String(s || "").trim();
 
 export default function VerifyEmail() {
   const dispatch = useDispatch();
   const navigate = useNavigate();
 
-  const [email, setEmail] = useState('');
-  const [otp, setOtp] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [email, setEmail] = useState("");
+  const [otp, setOtp] = useState("000000");
+  const [submitting, setSubmitting] = useState(false);
+
+  const emailNorm = useMemo(() => normEmail(email), [email]);
+  const otpNorm = useMemo(() => normOtp(otp), [otp]);
 
   useEffect(() => {
-    const e = sessionStorage.getItem('pending_email');
-    const o = sessionStorage.getItem('pending_otp'); // فقط برای dev
-    if (e) setEmail(e);
-    if (o) setOtp(o);
+    try {
+      const pe = sessionStorage.getItem("pending_email") || "";
+      const po = sessionStorage.getItem("pending_otp") || "000000";
+
+      log("mount storage snapshot", {
+        pending_email_raw: pe,
+        pending_email_norm: normEmail(pe),
+        pending_otp_raw: po,
+        pending_otp_norm: normOtp(po),
+      });
+
+      setEmail(normEmail(pe));
+      setOtp(normOtp(po) || "000000");
+    } catch (e) {
+      log("read storage failed", e?.message);
+    }
   }, []);
 
   const handleVerify = async (e) => {
     e.preventDefault();
-    if (loading) return;
-    setError('');
-    setLoading(true);
+
+    let storageNow = { pending_email: null, pending_otp: null };
+    try {
+      storageNow = {
+        pending_email: sessionStorage.getItem("pending_email"),
+        pending_otp: sessionStorage.getItem("pending_otp"),
+      };
+    } catch {}
+
+    const pendingEmailNorm = normEmail(storageNow.pending_email);
+    const pendingOtpNorm = normOtp(storageNow.pending_otp);
+
+    const finalEmail = pendingEmailNorm || emailNorm;
+    const finalOtp = pendingOtpNorm || otpNorm || "000000";
+
+    log("submit snapshot", {
+      state: { email_raw: email, email_norm: emailNorm, otp_raw: otp, otp_norm: otpNorm },
+      storage: { pending_email_raw: storageNow.pending_email, pending_otp_raw: storageNow.pending_otp },
+      finalPayload: { email: finalEmail, otp: finalOtp },
+    });
+
+    if (!finalEmail) return void toast.error("ایمیل پیدا نشد. لطفاً دوباره ثبت‌نام کنید.");
+    if (!finalOtp) return void toast.error("کد OTP خالی است.");
 
     try {
-      const res = await verifyEmailApi({ email, otp });
-      // res: { access_token, user, token_type, message }
+      setSubmitting(true);
 
-      const access_token = res.access_token;
+      const res = await verifyEmailApi({ email: finalEmail, otp: String(finalOtp) });
+      log("verify success", res);
 
-      // 1) ذخیره توکن
-      localStorage.setItem('access_token', access_token);
+      // ✅ 1) hydrate با خود response
+      dispatch(hydrateAuth(res));
 
-      // 2) ست کردن Redux auth state
-      dispatch(
-        hydrateAuth({
-          user: res.user,
-          token: access_token,
-          refresh_token: res.refresh_token ?? null,
-          expires_at: res.expires_at ?? null,
-        }),
-      );
+      // ✅ 2) چون ما قبل لاگین WS نمی‌خوایم، فقط reset کنیم (connect نکن)
+      try {
+        hardResetSocket("verified");
+      } catch {}
 
-      // 3) پاک کردن pending email
-      sessionStorage.removeItem('pending_email');
-      sessionStorage.removeItem('pending_otp');
+      // ✅ 3) sync user از /me (برای ProtectedRoute / UI)
+      try {
+        await dispatch(meThunk()).unwrap();
+      } catch (e) {
+        log("meThunk after verify failed", e?.message);
+      }
 
-      // 4) رفتن به صفحه اصلی (لاگین خودکار)
-      navigate('/', { replace: true });
+      toast.success("ایمیل با موفقیت تایید شد ✅");
+
+      try {
+        sessionStorage.removeItem("pending_email");
+        sessionStorage.removeItem("pending_otp");
+      } catch {}
+
+      navigate("/");
     } catch (err) {
-      setError(err?.response?.data?.message || err?.message || 'VERIFY_FAILED');
+      log("verify failed", {
+        status: err?.response?.status,
+        data: err?.response?.data,
+        message: err?.message,
+      });
+
+      const msg =
+        err?.response?.data?.message ||
+        err?.response?.data?.meta?.code ||
+        "خطا در تایید ایمیل";
+
+      toast.error(String(msg));
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="verify-wrap">
-      <h3>Verify Email</h3>
+    <Container style={{ maxWidth: 420, paddingTop: 40 }}>
+      <h4>تایید ایمیل</h4>
 
-      {error && <div className="alert alert-danger">{error}</div>}
+      {DEBUG && (
+        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+          debug: emailNorm=<code>{emailNorm || "(empty)"}</code>{" "}
+          otpNorm=<code>{otpNorm || "(empty)"}</code>
+        </div>
+      )}
 
-      <form onSubmit={handleVerify}>
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          autoComplete="email"
-          required
-        />
+      <Form onSubmit={handleVerify}>
+        <Form.Group className="mb-3">
+          <Form.Label>ایمیل</Form.Label>
+          <Form.Control value={email} onChange={(e) => setEmail(e.target.value)} placeholder="your@email.com" />
+        </Form.Group>
 
-        <input
-          type="text"
-          placeholder="OTP (6 digits)"
-          value={otp}
-          onChange={(e) => setOtp(e.target.value)}
-          maxLength={6}
-          required
-        />
+        <Form.Group className="mb-3">
+          <Form.Label>کد OTP</Form.Label>
+          <Form.Control
+            value={otp}
+            onChange={(e) => setOtp(e.target.value)}
+            placeholder="000000"
+            inputMode="numeric"
+          />
+        </Form.Group>
 
-        <button className="btn btn-primary" disabled={loading}>
-          {loading ? 'Verifying…' : 'Verify'}
-        </button>
-      </form>
-    </div>
+        <Button type="submit" disabled={submitting}>
+          {submitting ? "در حال تایید..." : "تایید"}
+        </Button>
+      </Form>
+    </Container>
   );
 }
-
-

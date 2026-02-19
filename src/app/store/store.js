@@ -1,4 +1,4 @@
-// src/store/store.js
+// chatApp-frontend/src/app/store/store.js
 import { configureStore, combineReducers } from '@reduxjs/toolkit';
 import { setupListeners } from '@reduxjs/toolkit/query';
 
@@ -13,8 +13,18 @@ import wsReducer from '@/app/store/wsReducer';
 import { apiSlice } from '@/shared/api/apiSlice';
 import wsMiddleware from '@/app/store/wsMiddleware';
 
+// ✅ attachStore to apiClient
+import { attachStore } from '@/shared/api/apiClient';
+
+// ✅ attach redux store to Socket.IO client
+import { attachWsStore } from '@/shared/ws/socketClient';
+
+import { attachRealtimeStore } from "@/shared/config/realtime";
+
 // ---------- ENV ----------
 const IS_PROD = import.meta.env.PROD === true;
+import backendReducer from "@/shared/backend/backendSlice";
+
 
 // ✅ logger is OPT-IN (default OFF)
 const DEV = import.meta.env.DEV === true;
@@ -29,20 +39,14 @@ const NOISY_PREFIXES = [
 ];
 
 // ---------- Root Reducer ----------
+
 const createRootReducer = () =>
   combineReducers({
+    backend: backendReducer, // ✅ این خط رو اضافه کن
     auth: authReducer,
-
-    // messages reducer (classic)
     messages: messageReducer,
-
-    // WebSocket state
     ws: wsReducer,
-
-    // RTK Query slice
     [apiSlice.reducerPath]: apiSlice.reducer,
-
-    // entity-based slice
     messagesEntity: messagesEntityReducer,
   });
 
@@ -55,7 +59,6 @@ const devLoggerMiddleware = (storeAPI) => (next) => (action) => {
   const result = next(action);
   const endedAt = performance.now();
 
-  // filter spam
   const isNoisy = NOISY_PREFIXES.some((p) => type.startsWith(p));
   if (isNoisy) return result;
 
@@ -63,15 +66,14 @@ const devLoggerMiddleware = (storeAPI) => (next) => (action) => {
   const isWs = type.startsWith('ws/');
   const isApi = type.startsWith(`${apiSlice.reducerPath}/`);
 
-  // only important categories
   if (isAuth || isWs || isApi) {
-    // ⚠️ DO NOT print full store state (heavy + huge spam)
-    // Print small snapshot only
     const state = storeAPI.getState();
     const tiny = {
       auth: {
         id: state.auth?.currentUser?.id ?? null,
-        hasToken: Boolean(state.auth?.access_token || state.auth?.token),
+        hasToken: Boolean(state.auth?.access_token),
+        hasRefresh: Boolean(state.auth?.refreshToken),
+        bootstrapped: Boolean(state.auth?.bootstrapped),
       },
       ws: {
         isConnected: Boolean(state.ws?.isConnected),
@@ -79,7 +81,6 @@ const devLoggerMiddleware = (storeAPI) => (next) => (action) => {
       },
     };
 
-     
     console.log(`%c[REDUX] ${type}`, 'color:#7dd3fc;font-weight:900;', {
       ms: Number(endedAt - startedAt).toFixed(1),
       payload: action.payload,
@@ -98,31 +99,19 @@ export const store = configureStore({
     const defaults = getDefaultMiddleware({
       thunk: true,
 
-      // ✅ keep checks ON in dev (but ignore known big/non-serializable parts)
       immutableCheck: IS_PROD
         ? false
         : {
             warnAfter: 128,
-            ignoredPaths: [
-              // messages slice can be huge
-              'messages',
-              // ws packets may contain non-serializable stuff
-              'ws.lastPacket',
-              // RTKQ cache
-              apiSlice.reducerPath,
-            ],
+            ignoredPaths: ['messages', 'ws.lastPacket', apiSlice.reducerPath],
           },
 
       serializableCheck: IS_PROD
         ? false
         : {
             warnAfter: 128,
-            ignoredPaths: [
-              'ws.lastPacket',
-              apiSlice.reducerPath,
-            ],
+            ignoredPaths: ['ws.lastPacket', apiSlice.reducerPath],
             ignoredActions: [
-              // if your messages reducer sometimes stores non-serializable things
               'messages/updateMessages',
               'messages/setGroupMessages',
               'messages/setIndividualMessages',
@@ -130,7 +119,6 @@ export const store = configureStore({
           },
     });
 
-    // ✅ order: listener -> rtkq -> ws -> logger
     return defaults
       .concat(listenerMiddleware.middleware)
       .concat(apiSlice.middleware)
@@ -141,7 +129,15 @@ export const store = configureStore({
   devTools: !IS_PROD,
 });
 
-// ✅ RTK Query: enable refetchOnFocus/refetchOnReconnect
+// ✅ RTK Query listeners
 setupListeners(store.dispatch);
-export default store;
 
+// ✅ link redux store to apiClient (token reading)
+attachStore(store);
+
+// ✅ link redux store to socket client (so socket can read token from auth slice)
+attachWsStore(store);
+
+attachRealtimeStore(store);
+
+export default store;

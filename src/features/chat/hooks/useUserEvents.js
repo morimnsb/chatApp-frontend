@@ -5,14 +5,30 @@ import { getOrCreateEcho } from '@/shared/config/realtime.js';
 const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 
-const log = (...a) => console.log('[UserEvents]', ...a);
+const log = (...a) => DEBUG && console.log('[UserEvents]', ...a);
 const dlog = (...a) => DEBUG && console.log('[UserEvents][DBG]', ...a);
 
-const EVENTS = ['.direct.message', 'direct.message'];
+const USER_EVENTS = [
+  '.direct.message',
+  'direct.message',
+  'chat:notify',
+  '.chat:notify',
+];
+
+const ROOM_EVENTS = [
+  '.ChatMessageCreated',
+  'ChatMessageCreated',
+  'chat:message',
+  '.chat:message',
+  'typing_indicator',
+  '.typing_indicator',
+];
+
+
 
 function safePreview(x, n = 220) {
   try {
-    const s = JSON.stringify(x);
+    const s = typeof x === 'string' ? x : JSON.stringify(x);
     return s.length > n ? s.slice(0, n) + '…' : s;
   } catch {
     return String(x);
@@ -23,246 +39,289 @@ export default function useUserEvents({
   effectiveKind,
   accessToken,
   currentUserId,
-  selectedRoomId = null, // فقط برای log
-  onNotify,
+  selectedRoomId = null,
+  onNotify, // (payload, meta)
 }) {
-  const selectedRoomRef = useRef(selectedRoomId);
-  useEffect(() => {
-    selectedRoomRef.current = selectedRoomId;
-  }, [selectedRoomId]);
-
   const onNotifyRef = useRef(onNotify);
   useEffect(() => {
     onNotifyRef.current = onNotify;
   }, [onNotify]);
 
-  // subscription state
-  const subRef = useRef({
+  // ✅ NEW: keep latest selectedRoomId without re-subscribing USER channel
+  const selectedRoomIdRef = useRef(selectedRoomId);
+  useEffect(() => {
+    selectedRoomIdRef.current = selectedRoomId;
+  }, [selectedRoomId]);
+
+  const userSubRef = useRef({
     key: null,
     echo: null,
-    channelName: null, // e.g. "user.4" (بدون private-)
+    channelName: null,
     channel: null,
     binds: [],
-    connHandlers: null, // { onStateChange, onConnected, onError }
-    connBound: false,
+    onceConnected: null,
   });
 
+  // -------------------------
+  // USER CHANNEL (does NOT depend on selectedRoomId)
+  // -------------------------
   useEffect(() => {
     const kind = String(effectiveKind || '').toLowerCase();
     const isReverb = kind === 'reverb';
-    const hasToken = Boolean(accessToken);
-    const hasUserId = Number(currentUserId) > 0;
-
-    const tokenStr = accessToken ? String(accessToken) : '';
-    const tokenKey = tokenStr ? tokenStr.slice(0, 18) : '';
-
-    const channelName = hasUserId ? `user.${Number(currentUserId)}` : null;
-
-    const nextKey = isReverb && hasToken && hasUserId ? `${kind}|${channelName}|${tokenKey}` : null;
-
-    log('effect()', {
-      kind,
-      isReverb,
-      hasToken,
-      currentUserId,
-      selectedRoomId: selectedRoomRef.current,
-      nextKey,
-    });
+    if (!isReverb) return undefined;
 
     const cleanup = (reason = 'cleanup') => {
-      const prev = subRef.current;
+      const prev = userSubRef.current;
 
-      log('cleanup()', {
+      dlog('cleanup(USER)()', {
         reason,
         key: prev.key,
-        hasEcho: Boolean(prev.echo),
         channelName: prev.channelName,
         hasChannel: Boolean(prev.channel),
       });
 
-      // 1) stopListening
-      if (prev.channel) {
-        for (const ev of EVENTS) {
-          try {
-            prev.channel.stopListening(ev);
-            dlog('stopListening ok', ev);
-          } catch (e) {
-            dlog('stopListening failed', ev, e);
-          }
-        }
-      }
-
-      // 2) unbind_global
-      try {
-        const pch = prev.channel?.pusher?.channels?.channels?.[`private-${prev.channelName}`];
-        prev.binds?.forEach((fn) => {
-          try {
-            pch?.unbind_global?.(fn);
-          } catch {}
-        });
-      } catch {}
-
-      // 3) ✅ leave channel (IMPORTANT: بدون prefix!)
-      if (prev.echo && prev.channelName) {
-        try {
-          // Echo خودش private- رو مدیریت می‌کنه
-          prev.echo.leave(prev.channelName);
-          dlog('echo.leave ok', prev.channelName);
-        } catch (e) {
-          dlog('echo.leave failed', e);
-        }
-      }
-
-      // 4) unbind connection handlers (فقط اگر bind کرده بودیم)
       try {
         const conn = prev.echo?.connector?.pusher?.connection;
-        const h = prev.connHandlers;
-        if (conn && h) {
-          conn.unbind?.('state_change', h.onStateChange);
-          conn.unbind?.('connected', h.onConnected);
-          conn.unbind?.('error', h.onError);
-        }
+        if (conn && prev.onceConnected) conn.unbind?.('connected', prev.onceConnected);
       } catch {}
 
-      subRef.current = {
+      if (prev.channel) {
+        for (const ev of USER_EVENTS) {
+          try { prev.channel.stopListening(ev); } catch {}
+        }
+      }
+
+      try {
+        const pch = prev.channel?.pusher?.channels?.channels?.[`private-${prev.channelName}`];
+        prev.binds?.forEach((fn) => pch?.unbind_global?.(fn));
+      } catch {}
+
+      if (prev.echo && prev.channelName) {
+        try { prev.echo.leave(prev.channelName); } catch {}
+      }
+
+      userSubRef.current = {
         key: null,
-        echo: prev.echo || null, // echo رو نگه می‌داریم (disconnect نمی‌کنیم)
+        echo: prev.echo || null,
         channelName: null,
         channel: null,
         binds: [],
-        connHandlers: null,
-        connBound: prev.connBound, // فقط برای جلوگیری از bind تکراری
+        onceConnected: null,
       };
     };
 
-    if (!nextKey) {
-      log('not ready -> cleanup');
+    const token = String(accessToken || '').trim();
+    const uid = Number(currentUserId) > 0 ? Number(currentUserId) : null;
+
+    if (!token || !uid) {
       cleanup('not-ready');
       return undefined;
     }
 
-    if (subRef.current.key === nextKey && subRef.current.channel) {
-      log('same key -> skip resubscribe ✅', { key: nextKey });
-      return undefined;
-    }
-
-    // پاکسازی قبلی
-    cleanup('before-subscribe');
-
     const echo = getOrCreateEcho(accessToken);
     if (!echo) {
-      log('getOrCreateEcho returned null -> cleanup');
       cleanup('no-echo');
       return undefined;
     }
 
+    const channelName = `user.${uid}`;
+    const tokenKey = token.replace(/^Bearer\s+/i, '').slice(0, 16);
+    const nextKey = `${kind}|${channelName}|${tokenKey}`;
+
+    if (userSubRef.current.key === nextKey && userSubRef.current.channel) {
+      dlog('USER same key -> skip');
+      return undefined;
+    }
+
+    cleanup('before-subscribe');
+
     const conn = echo.connector?.pusher?.connection;
 
     const doSubscribe = () => {
-      // اگر وسط کار key عوض شد، subscribe نکن
-      if (subRef.current.key && subRef.current.key !== nextKey) return;
+      log('subscribing(USER)', { channelName });
 
-      log('subscribing', { channelName });
-
-      let channel;
-      try {
-        channel = echo.private(channelName);
-      } catch (e) {
-        log('echo.private failed', e);
-        return;
-      }
-
-      // bind_global (برای debug نام واقعی event)
+      const channel = echo.private(channelName);
       const binds = [];
-      try {
-        const pusherChannel = channel?.pusher?.channels?.channels?.[`private-${channelName}`];
-        if (pusherChannel?.bind_global) {
-          const fn = (eventName, data) => {
-            log('GLOBAL EVENT on user channel', {
-              eventName,
-              dataPreview: safePreview(data),
-            });
-          };
-          pusherChannel.bind_global(fn);
-          binds.push(fn);
-          log('bind_global attached ✅', { key: `private-${channelName}` });
-        } else {
-          log('bind_global not available ⚠️');
-        }
-      } catch (e) {
-        log('bind_global failed', e);
-      }
 
-      // listen events
-      EVENTS.forEach((ev) => {
-        try {
-          channel.listen(ev, (payload) => {
-            log('EVENT RECEIVED ✅', { ev, payloadPreview: safePreview(payload) });
-            try {
-              onNotifyRef.current?.(payload);
-            } catch (e) {
-              console.error('[UserEvents] onNotify error', e);
-            }
-          });
-          log('listen attached ✅', ev);
-        } catch (e) {
-          log('listen attach failed', { ev, err: String(e?.message || e) });
+      try {
+        const pch = channel?.pusher?.channels?.channels?.[`private-${channelName}`];
+        if (pch?.bind_global) {
+          const fn = (eventName, data) =>
+            dlog('GLOBAL(USER)', { eventName, dataPreview: safePreview(data) });
+          pch.bind_global(fn);
+          binds.push(fn);
         }
+      } catch {}
+
+      USER_EVENTS.forEach((ev) => {
+        channel.listen(ev, (payload) => {
+          log('EVENT(USER)', { ev, payloadPreview: safePreview(payload) });
+
+          // ✅ IMPORTANT: use selectedRoomIdRef so it stays fresh without re-subscribe
+          onNotifyRef.current?.(payload, {
+            source: 'reverb:user',
+            eventName: ev,
+            selectedRoomId: selectedRoomIdRef.current,
+            currentUserId,
+          });
+        });
       });
 
-      subRef.current = {
+      userSubRef.current = {
+        ...userSubRef.current,
         key: nextKey,
         echo,
         channelName,
         channel,
         binds,
-        connHandlers: subRef.current.connHandlers,
-        connBound: subRef.current.connBound,
       };
     };
 
-    // connection debug فقط یک بار
-    try {
-      if (conn && !subRef.current.connBound) {
-        subRef.current.connBound = true;
-
-        const onStateChange = (st) => log('pusher state_change', st);
-        const onConnected = () => log('pusher connected', { socket_id: conn.socket_id });
-        const onError = (err) => log('pusher error', err);
-
-        subRef.current.connHandlers = { onStateChange, onConnected, onError };
-
-        log('connection state', { state: conn.state, socket_id: conn.socket_id });
-        conn.bind?.('state_change', onStateChange);
-        conn.bind?.('connected', onConnected);
-        conn.bind?.('error', onError);
-      }
-    } catch (e) {
-      log('connection debug failed', e);
-    }
-
-    // ✅ subscribe فقط وقتی connected است
     if (conn?.state === 'connected') {
       doSubscribe();
     } else {
-      // یکبار وقتی connected شد subscribe کن
-      const onceConnected = () => {
-        try {
-          conn?.unbind?.('connected', onceConnected);
-        } catch {}
+      const once = () => {
+        try { conn?.unbind?.('connected', once); } catch {}
         doSubscribe();
       };
-      try {
-        conn?.bind?.('connected', onceConnected);
-      } catch {}
+      userSubRef.current.onceConnected = once;
+      try { conn?.bind?.('connected', once); } catch {}
     }
 
-    // key را ست کن تا از subscribe اشتباه جلوگیری شود
-    subRef.current.key = nextKey;
-    subRef.current.echo = echo;
+    userSubRef.current.echo = echo;
+    userSubRef.current.key = nextKey;
 
     return () => cleanup('effect-return');
+    // ✅ REMOVED selectedRoomId from deps on purpose
   }, [effectiveKind, accessToken, currentUserId]);
+
+  // -------------------------
+  // ROOM CHANNEL (depends on selectedRoomId)
+  // -------------------------
+  const roomSubRef = useRef({
+    key: null,
+    echo: null,
+    roomId: null,
+    channelName: null,
+    channel: null,
+    binds: [],
+  });
+
+  useEffect(() => {
+    const kind = String(effectiveKind || '').toLowerCase();
+    const isReverb = kind === 'reverb';
+    if (!isReverb) return undefined;
+
+    const token = String(accessToken || '').trim();
+    const uid = Number(currentUserId) > 0 ? Number(currentUserId) : null;
+    const rid = Number(selectedRoomId) > 0 ? Number(selectedRoomId) : null;
+
+    const cleanupRoom = (reason = 'cleanup-room', forceLeave = true) => {
+      const prev = roomSubRef.current;
+
+      dlog('cleanup(ROOM)()', {
+        reason,
+        key: prev.key,
+        channelName: prev.channelName,
+        roomId: prev.roomId,
+        hasChannel: Boolean(prev.channel),
+      });
+
+      if (prev.channel) {
+        for (const ev of ROOM_EVENTS) {
+          try { prev.channel.stopListening(ev); } catch {}
+        }
+      }
+
+      try {
+        const pch = prev.channel?.pusher?.channels?.channels?.[`private-${prev.channelName}`];
+        prev.binds?.forEach((fn) => pch?.unbind_global?.(fn));
+      } catch {}
+
+      if (forceLeave && prev.echo && prev.channelName) {
+        try { prev.echo.leave(prev.channelName); } catch {}
+      }
+
+      roomSubRef.current = {
+        key: null,
+        echo: prev.echo || null,
+        roomId: null,
+        channelName: null,
+        channel: null,
+        binds: [],
+      };
+    };
+
+    if (!token || !uid) {
+      cleanupRoom('not-ready');
+      return undefined;
+    }
+
+    const echo = getOrCreateEcho(accessToken);
+    if (!echo) {
+      cleanupRoom('no-echo');
+      return undefined;
+    }
+
+    if (!rid) {
+      if (roomSubRef.current.channelName) cleanupRoom('no-room-selected');
+      return undefined;
+    }
+
+    const channelName = `chat.${rid}`;
+    const tokenKey = token.replace(/^Bearer\s+/i, '').slice(0, 16);
+    const nextKey = `${kind}|${channelName}|${tokenKey}`;
+
+    if (roomSubRef.current.key === nextKey && roomSubRef.current.channel) {
+      dlog('ROOM same key -> skip');
+      return undefined;
+    }
+
+    if (roomSubRef.current.channelName && roomSubRef.current.channelName !== channelName) {
+      cleanupRoom('switch-room');
+    } else {
+      cleanupRoom('before-room-subscribe', false);
+    }
+
+    log('subscribing(ROOM)', { channelName, selectedRoomId: rid });
+
+    const channel = echo.private(channelName);
+    const binds = [];
+
+    try {
+      const pch = channel?.pusher?.channels?.channels?.[`private-${channelName}`];
+      if (pch?.bind_global) {
+        const fn = (eventName, data) =>
+          dlog('GLOBAL(ROOM)', { eventName, dataPreview: safePreview(data) });
+        pch.bind_global(fn);
+        binds.push(fn);
+      }
+    } catch {}
+
+    ROOM_EVENTS.forEach((ev) => {
+      channel.listen(ev, (payload) => {
+        log('EVENT(ROOM)', { ev, payloadPreview: safePreview(payload) });
+
+        onNotifyRef.current?.(payload, {
+          source: 'reverb:room',
+          eventName: ev,
+          selectedRoomId: rid,
+          currentUserId,
+        });
+      });
+    });
+
+    roomSubRef.current = {
+      key: nextKey,
+      echo,
+      roomId: rid,
+      channelName,
+      channel,
+      binds,
+    };
+
+    return () => cleanupRoom('effect-return');
+  }, [effectiveKind, accessToken, currentUserId, selectedRoomId]);
 
   return null;
 }

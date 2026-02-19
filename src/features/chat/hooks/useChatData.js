@@ -1,116 +1,58 @@
-// src/hooks/useChatData.js
-import { useEffect, useMemo, useRef } from 'react';
-import useFetch from '@/shared/hooks/useFetch';
+// chatApp-frontend/src/features/chat/hooks/useChatData.js
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useDispatch } from 'react-redux';
-import {
-  setLoading,
-  setGroupMessages,
-  setIndividualMessages,
-  setError,
-} from '@/features/chat/state/messageActions';
+
+import apiClient from '@/shared/api/apiClient';
+import { setLoading, setGroupMessages, setError } from '@/features/chat/state/messageActions';
 import { toErrorMessage } from '@/shared/utils/errors';
 
 const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 const log = (...a) => DEBUG && console.log('[useChatData]', ...a);
 
+const isCanceled = (err) =>
+  err?.code === 'ERR_CANCELED' ||
+  err?.name === 'CanceledError' ||
+  err?.name === 'AbortError' ||
+  String(err?.message || '').toLowerCase().includes('canceled');
+
 const toArray = (x) => {
   if (Array.isArray(x)) return x;
   if (Array.isArray(x?.data)) return x.data;
   if (Array.isArray(x?.results)) return x.results;
   if (Array.isArray(x?.rooms)) return x.rooms;
+  if (Array.isArray(x?.conversations)) return x.conversations;
   return [];
 };
 
-export default function useChatData({ endpoints, accessToken }) {
+export default function useChatData() {
   const dispatch = useDispatch();
 
-  const hasToken = Boolean(accessToken);
-  const roomsUrl = endpoints?.rooms || null;
-  const convosUrl = endpoints?.convos || null;
+  // ✅ Only one API
+  const convosPath = '/chat/conversations/';
 
-  const fetchConfig = useMemo(() => {
-    if (!hasToken) return null;
-    return {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-      },
-      immediate: true,
-    };
-  }, [hasToken, accessToken]);
-
-  const shouldFetchRooms = Boolean(roomsUrl && fetchConfig);
-  const shouldFetchConvos = Boolean(convosUrl && fetchConfig);
-
-  const {
-    data: roomsRaw,
-    loading: loadingRooms,
-    error: errorRooms,
-    retry: retryRoomsRaw,
-  } = useFetch(shouldFetchRooms ? roomsUrl : null, fetchConfig || { immediate: false });
-
-  const {
-    data: convosRaw,
-    loading: loadingConvos,
-    error: errorConvos,
-    retry: retryConvosRaw,
-  } = useFetch(shouldFetchConvos ? convosUrl : null, fetchConfig || { immediate: false });
-
-  const lastNonEmptyRef = useRef({ rooms: null, dms: null });
+  const abortRef = useRef(null);
+  const inFlightRef = useRef(false);
+  const lastNonEmptyRef = useRef(null);
   const prevMetaRef = useRef({ loading: null, errMsg: null });
 
-  const roomsArr = useMemo(() => {
-    if (!roomsRaw) return null;
-    return toArray(roomsRaw);
-  }, [roomsRaw]);
+  const setLoadingSafe = useCallback(
+    (next) => {
+      if (prevMetaRef.current.loading !== next) {
+        prevMetaRef.current.loading = next;
+        dispatch(setLoading(next));
+      }
+    },
+    [dispatch],
+  );
 
-  const dmPartners = useMemo(() => {
-    if (!convosRaw) return null;
-    if (Array.isArray(convosRaw?.partners)) return convosRaw.partners;
-    if (Array.isArray(convosRaw)) return convosRaw;
-    if (Array.isArray(convosRaw?.results)) return convosRaw.results;
-    if (Array.isArray(convosRaw?.data)) return convosRaw.data;
-    return [];
-  }, [convosRaw]);
+  const setErrorSafe = useCallback(
+    (err) => {
+      const msg = err ? toErrorMessage(err) : null;
+      if (prevMetaRef.current.errMsg === msg) return;
 
-  useEffect(() => {
-    if (DEBUG) {
-      log('tick', {
-        hasToken,
-        roomsUrl,
-        convosUrl,
-        shouldFetchRooms,
-        shouldFetchConvos,
-        roomsRawType: roomsRaw == null ? null : Array.isArray(roomsRaw) ? 'array' : typeof roomsRaw,
-        convosRawType: convosRaw == null ? null : Array.isArray(convosRaw) ? 'array' : typeof convosRaw,
-      });
-    }
-
-    // ✅ rooms -> groupMessages
-    if (roomsArr !== null) {
-      if (roomsArr.length) lastNonEmptyRef.current.rooms = roomsArr;
-      dispatch(setGroupMessages(roomsArr));
-    }
-
-    // ✅ dm partners -> individualMessages
-    if (dmPartners !== null) {
-      if (dmPartners.length) lastNonEmptyRef.current.dms = dmPartners;
-      dispatch(setIndividualMessages(dmPartners));
-    }
-
-    // ✅ loading (avoid spam dispatch)
-    const nextLoading = Boolean(loadingRooms || loadingConvos);
-    if (prevMetaRef.current.loading !== nextLoading) {
-      prevMetaRef.current.loading = nextLoading;
-      dispatch(setLoading(nextLoading));
-    }
-
-    // ✅ error (avoid spam dispatch)
-    const err = errorRooms || errorConvos;
-    const msg = err ? toErrorMessage(err) : null;
-    if (prevMetaRef.current.errMsg !== msg) {
       prevMetaRef.current.errMsg = msg;
+
       if (err) {
         dispatch(
           setError({
@@ -122,40 +64,71 @@ export default function useChatData({ endpoints, accessToken }) {
       } else {
         dispatch(setError(null));
       }
+    },
+    [dispatch],
+  );
+
+  const fetchConversations = useCallback(async () => {
+    // cancel previous
+    try {
+      abortRef.current?.abort?.();
+    } catch {}
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    inFlightRef.current = true;
+    setLoadingSafe(true);
+
+    try {
+      if (DEBUG) log('request conversations', { url: convosPath, baseURL: apiClient?.defaults?.baseURL });
+
+      const res = await apiClient.get(convosPath, { signal: controller.signal });
+      const roomsArr = toArray(res?.data);
+
+      if (roomsArr.length) lastNonEmptyRef.current = roomsArr;
+
+      // ✅ store ALL rooms (dm + group) in one list
+      dispatch(setGroupMessages(roomsArr));
+
+      setErrorSafe(null);
+
+      if (DEBUG) log('conversations ok', { count: roomsArr.length });
+      return roomsArr;
+    } catch (err) {
+      if (controller.signal.aborted || isCanceled(err)) return null;
+
+      // keep last non-empty snapshot if exists
+      if (lastNonEmptyRef.current) {
+        dispatch(setGroupMessages(lastNonEmptyRef.current));
+      }
+
+      setErrorSafe(err);
+      if (DEBUG) log('conversations error', err?.message || err);
+      return null;
+    } finally {
+      inFlightRef.current = false;
+      setLoadingSafe(false);
+      if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [
-    dispatch,
-    hasToken,
-    roomsUrl,
-    convosUrl,
-    shouldFetchRooms,
-    shouldFetchConvos,
-    roomsRaw,
-    convosRaw,
-    roomsArr,
-    dmPartners,
-    loadingRooms,
-    loadingConvos,
-    errorRooms,
-    errorConvos,
-  ]);
+  }, [dispatch, convosPath, setErrorSafe, setLoadingSafe]);
 
-  const retryRooms = useMemo(() => {
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      if (!alive) return;
+      await fetchConversations();
+    })();
+
     return () => {
-      if (!shouldFetchRooms) return DEBUG && log('retryRooms skipped (no url/token)');
-      retryRoomsRaw?.();
+      alive = false;
+      try {
+        abortRef.current?.abort?.();
+      } catch {}
     };
-  }, [shouldFetchRooms, retryRoomsRaw]);
+  }, [fetchConversations]);
 
-  const retryConvos = useMemo(() => {
-    return () => {
-      if (!shouldFetchConvos) return DEBUG && log('retryConvos skipped (no url/token)');
-      retryConvosRaw?.();
-    };
-  }, [shouldFetchConvos, retryConvosRaw]);
+  const retryConvos = useMemo(() => () => fetchConversations(), [fetchConversations]);
 
-  return { retryRooms, retryConvos };
+  return { retryConvos };
 }
-
-
-

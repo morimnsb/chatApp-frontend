@@ -3,48 +3,56 @@ import { useCallback, useMemo, useState } from 'react';
 
 export const BACKEND_KEY = 'backendChoice';
 
-export const BACKEND_REGISTRY = {
-  
+// ✅ چون الان پروژه‌ات روی node هست:
+export const DEFAULT_BACKEND = 'node';
 
+export const BACKEND_REGISTRY = {
   reverb: {
     key: 'reverb',
     label: 'Laravel + Reverb (real-time)',
     apiBaseEnvKeys: ['VITE_API_BASE_REVERB', 'REACT_APP_API_BASE_REVERB'],
     defaultApiBase: 'http://localhost:8000/api',
     paths: {
-      convos: '/chatMeetUp/conversations/',
-      rooms: '/chatMeetUp/chatrooms/',
+      convos: '/chat/conversations/',
+      rooms: '/chat/chatrooms/',
       users: '/auth/users/',
-      friend: '/chatMeetUp/friendship',
+      friend: '/chat/friendship',
       me: '/auth/me',
-      makeContact: '/chatMeetUp/make-contact',
-      firstMessage: '/chatMeetUp/make-contact',
-      roomMessages: (roomId) => `/chatMeetUp/messages/${roomId}/`,
+      makeContact: '/chat/make-contact',
+      firstMessage: '/chat/make-contact',
+      roomMessages: (roomId) => `/chat/messages/${roomId}/`,
     },
-    ws: { kind: 'echo' }, // Echo/Reverb connector
+    ws: { kind: 'echo' },
   },
 
   node: {
     key: 'node',
-    label: 'Node.js (Express/Fastify)',
+    label: 'Node.js (Express)',
     apiBaseEnvKeys: ['VITE_API_BASE_NODE', 'REACT_APP_API_BASE_NODE'],
-    defaultApiBase: 'http://localhost:9000/api',
+    // ✅ درست: 3000
+    defaultApiBase: 'http://localhost:3000/api',
     paths: {
-      // فرض: API contract مشابه
+      // ✅ single source of truth
       convos: '/chat/conversations/',
-      rooms: '/chat/rooms/',
+
+      // ✅ IMPORTANT: alias "rooms" -> "convos"
+      // so any legacy code calling endpoints.rooms will still hit conversations
+      rooms: '/chat/conversations/',
+
       users: '/auth/users/',
       friend: '/chat/friendship/',
-      me: '/auth/me/',
+      me: '/auth/me',
       makeContact: '/chat/make-contact/',
       firstMessage: '/chat/make-contact/',
       roomMessages: (roomId) => `/chat/messages/${roomId}/`,
     },
     ws: {
-      kind: 'raw',
-      wsEnvKey: 'VITE_WS_URL_NODE',
-      defaultWsBase: 'ws://localhost:9000/ws/chat/',
-      tokenParam: 'token',
+      kind: 'socketio',
+      // ✅ مطابق env تو:
+      urlEnvKey: 'VITE_NODE_WS_URL',   // http://localhost:3000
+      pathEnvKey: 'VITE_NODE_WS_PATH', // /socket.io
+      defaultWsUrl: 'http://localhost:3000',
+      defaultWsPath: '/socket.io',
     },
   },
 
@@ -54,21 +62,21 @@ export const BACKEND_REGISTRY = {
     apiBaseEnvKeys: ['VITE_API_BASE_NEST', 'REACT_APP_API_BASE_NEST'],
     defaultApiBase: 'http://localhost:9100/api',
     paths: {
-      // اگر Nest همون contract رو داد، همین می‌مونه
       convos: '/chat/conversations/',
       rooms: '/chat/rooms/',
       users: '/auth/users/',
       friend: '/chat/friendship/',
-      me: '/auth/me/',
+      me: '/auth/me',
       makeContact: '/chat/make-contact/',
       firstMessage: '/chat/make-contact/',
       roomMessages: (roomId) => `/chat/messages/${roomId}/`,
     },
     ws: {
-      kind: 'raw',
-      wsEnvKey: 'VITE_WS_URL_NEST',
-      defaultWsBase: 'ws://localhost:9100/ws/chat/',
-      tokenParam: 'token',
+      kind: 'socketio',
+      urlEnvKey: 'VITE_NEST_WS_URL',
+      pathEnvKey: 'VITE_NEST_WS_PATH',
+      defaultWsUrl: 'http://localhost:9100',
+      defaultWsPath: '/socket.io',
     },
   },
 
@@ -76,13 +84,13 @@ export const BACKEND_REGISTRY = {
     key: 'django',
     label: 'Django',
     apiBaseEnvKeys: ['VITE_API_BASE_DJANGO', 'REACT_APP_API_BASE_DJANGO'],
-    defaultApiBase: 'http://localhost:8001',
+    defaultApiBase: 'http://localhost:8001/api',
     paths: {
       convos: '/chat/conversations/',
       rooms: '/chat/rooms/',
       users: '/auth/users/',
       friend: '/chat/friendship/',
-      me: '/auth/me/',
+      me: '/auth/me',
       makeContact: null,
       firstMessage: null,
       roomMessages: (roomId) => `/chat/messages/${roomId}/`,
@@ -99,14 +107,13 @@ export const BACKEND_REGISTRY = {
     key: 'fastapi',
     label: 'FastAPI',
     apiBaseEnvKeys: ['VITE_API_BASE_FASTAPI', 'REACT_APP_API_BASE_FASTAPI'],
-    defaultApiBase: 'http://localhost:8002',
+    defaultApiBase: 'http://localhost:8002/api',
     paths: {
-      // معمولاً FastAPI endpointها رو مثل Django می‌سازن
       convos: '/chat/conversations/',
       rooms: '/chat/rooms/',
       users: '/auth/users/',
       friend: '/chat/friendship/',
-      me: '/auth/me/',
+      me: '/auth/me',
       makeContact: null,
       firstMessage: null,
       roomMessages: (roomId) => `/chat/messages/${roomId}/`,
@@ -146,7 +153,9 @@ function env(key, fallback = undefined) {
 /* ---------- sanitize base URLs ---------- */
 function normalizeBase(val, fallback) {
   const v = (val ?? '').toString().trim();
-  if (!v || v === '/' || /^(false|null|undefined|0)$/i.test(v)) return fallback;
+  if (!v || v === '/' || /^(false|null|undefined|0)$/i.test(v)) {
+    return String(fallback).replace(/\/+$/, '');
+  }
   return v.replace(/\/+$/, '');
 }
 
@@ -169,28 +178,43 @@ function pickEnvBase(keys, fallback) {
   return normalizeBase(undefined, fallback);
 }
 
+/* ---------- default backend ---------- */
+export function getDefaultBackend() {
+  const envDefault = String(env('VITE_BACKEND', env('REACT_APP_BACKEND', DEFAULT_BACKEND))).toLowerCase();
+  return isValidBackendKey(envDefault) ? envDefault : DEFAULT_BACKEND;
+}
+
 /* ---------- backend choice ---------- */
 export function getChosenBackend() {
   const saved = safeGetItem(BACKEND_KEY);
   if (isValidBackendKey(saved)) return String(saved).toLowerCase();
+  return getDefaultBackend();
+}
 
-  // default: reverb (real-time)
-  const envDefault = String(env('VITE_BACKEND', env('REACT_APP_BACKEND', 'reverb'))).toLowerCase();
-  return isValidBackendKey(envDefault) ? envDefault : 'reverb';
+export function ensureBackend(value) {
+  const v = String(value ?? '').toLowerCase();
+  return isValidBackendKey(v) ? v : getChosenBackend();
 }
 
 export function setChosenBackend(value, { reload = true } = {}) {
   if (!value) return;
   const v = String(value).toLowerCase();
-  if (!BACKENDS.includes(v)) return;
+  if (!isValidBackendKey(v)) return;
+
   safeSetItem(BACKEND_KEY, v);
-  if (reload && typeof window !== 'undefined') window.location.reload();
+
+  if (reload && typeof window !== 'undefined') {
+    window.location.reload();
+  }
 }
 
+export function setChosenBackendNoReload(value) {
+  setChosenBackend(value, { reload: false });
+}
 
 /* ---------- build endpoints (ABSOLUTE) ---------- */
 export function buildEndpoints(kind) {
-  const k = isValidBackendKey(kind) ? String(kind).toLowerCase() : 'reverb';
+  const k = isValidBackendKey(kind) ? String(kind).toLowerCase() : getChosenBackend();
   const cfg = BACKEND_REGISTRY[k];
 
   const base = pickEnvBase(cfg.apiBaseEnvKeys, cfg.defaultApiBase);
@@ -203,58 +227,82 @@ export function buildEndpoints(kind) {
     users: p.users ? joinPath(base, p.users) : null,
     friend: p.friend ? joinPath(base, p.friend) : null,
     me: p.me ? joinPath(base, p.me) : null,
-
     makeContact: p.makeContact ? joinPath(base, p.makeContact) : null,
     firstMessage: p.firstMessage ? joinPath(base, p.firstMessage) : null,
-
-    roomMessages:
-      typeof p.roomMessages === 'function'
-        ? (roomId) => joinPath(base, p.roomMessages(roomId))
-        : null,
-
+    roomMessages: typeof p.roomMessages === 'function' ? (roomId) => joinPath(base, p.roomMessages(roomId)) : null,
     kind: cfg.key,
     label: cfg.label,
     ws: cfg.ws,
   };
 }
 
+/* ---------- socket.io config builder (node/nest) ---------- */
+export function buildSocketIoConfig(kind) {
+  const k = isValidBackendKey(kind) ? String(kind).toLowerCase() : getChosenBackend();
+  const ws = BACKEND_REGISTRY[k]?.ws;
+  if (!ws || ws.kind !== 'socketio') return null;
+
+  const url = normalizeBase(env(ws.urlEnvKey, ws.defaultWsUrl), ws.defaultWsUrl);
+  const pathRaw = env(ws.pathEnvKey, ws.defaultWsPath) || ws.defaultWsPath;
+  const path = String(pathRaw).trim() || ws.defaultWsPath;
+
+  return { url, path };
+}
+
 /* ---------- raw WS URL (only for ws.kind=raw) ---------- */
 export function buildWsUrl(kind, token) {
-  const k = isValidBackendKey(kind) ? String(kind).toLowerCase() : 'reverb';
+  const k = isValidBackendKey(kind) ? String(kind).toLowerCase() : getChosenBackend();
   const ws = BACKEND_REGISTRY[k]?.ws;
-  if (!ws || ws.kind !== 'raw') return null;
+  if (!ws) return null;
 
-  const raw = env(ws.wsEnvKey, ws.defaultWsBase);
-  const base = normalizeBase(raw, ws.defaultWsBase);
-  const sep = String(base).includes('?') ? '&' : '?';
-  const param = encodeURIComponent(ws.tokenParam || 'token');
-  const t = encodeURIComponent(token || '');
-  return `${base}${sep}${param}=${t}`;
+  if (ws.kind === 'raw') {
+    const raw = env(ws.wsEnvKey, ws.defaultWsBase);
+    const base = normalizeBase(raw, ws.defaultWsBase);
+    const sep = String(base).includes('?') ? '&' : '?';
+    const param = encodeURIComponent(ws.tokenParam || 'token');
+    const t = encodeURIComponent(token || '');
+    return `${base}${sep}${param}=${t}`;
+  }
+
+  return null;
 }
 
 /* ---------- hook ---------- */
-/* ---------- hook ---------- */
-export function useBackendChoice() {
+export function useBackendChoice({ persist = true } = {}) {
   const [backendChoice, setBackendChoiceState] = useState(getChosenBackend());
 
-  const handleChangeBackend = useCallback((eOrValue) => {
-    const raw =
-      typeof eOrValue === 'string' ? eOrValue : eOrValue?.target?.value;
-    if (!raw) return;
+  const handleChangeBackend = useCallback(
+    (eOrValue) => {
+      const raw = typeof eOrValue === 'string' ? eOrValue : eOrValue?.target?.value;
+      if (!raw) return;
 
-    const v = String(raw).toLowerCase();
-    if (!isValidBackendKey(v)) return;
+      const v = String(raw).toLowerCase();
+      if (!isValidBackendKey(v)) return;
 
-    setBackendChoiceState(v);
-    setChosenBackend(v, { reload: false }); // ✅ بدون ریفرش
-  }, []);
+      setBackendChoiceState(v);
+      if (persist) setChosenBackend(v, { reload: false });
+    },
+    [persist],
+  );
 
-  const effectiveKind = isValidBackendKey(backendChoice) ? backendChoice : 'reverb';
+  const effectiveKind = isValidBackendKey(backendChoice) ? backendChoice : getChosenBackend();
 
   const backendLabel = useMemo(
     () => BACKEND_REGISTRY[effectiveKind]?.label || effectiveKind,
     [effectiveKind],
   );
 
-  return { backendChoice: effectiveKind, effectiveKind, handleChangeBackend, backendLabel };
+  const backendOptions = useMemo(
+    () => BACKENDS.map((k) => ({ value: k, label: BACKEND_REGISTRY[k].label })),
+    [],
+  );
+
+  return {
+    backendChoice: effectiveKind,
+    effectiveKind,
+    backendLabel,
+    backendOptions,
+    handleChangeBackend,
+    setBackend: (k) => handleChangeBackend(k),
+  };
 }

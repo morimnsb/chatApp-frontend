@@ -82,7 +82,9 @@ listenerMiddleware.startListening({
     const state = listenerApi.getState();
 
     const isExpired = selectIsTokenExpired(state);
-    const refreshToken = selectRefreshToken(state);
+    // selectRefreshToken رو از import بردار
+const refreshToken = state.auth?.refreshToken || null;
+
 
     // اگر refreshToken نداریم یا هنوز منقضی نشده، کاری نکن
     if (!refreshToken || !isExpired) return;

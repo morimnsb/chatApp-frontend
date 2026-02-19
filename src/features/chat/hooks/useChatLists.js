@@ -1,5 +1,5 @@
-// src/hooks/chat/useChatLists.js
-import { useMemo } from 'react';
+// chatApp-frontend/src/hooks/chat/useChatLists.js
+import { useEffect, useMemo } from 'react';
 import { useSelector } from 'react-redux';
 
 const DEV = import.meta.env.DEV === true;
@@ -21,9 +21,58 @@ function getLastAt(room) {
     room?.last_message_at ||
     room?.lastMessage?.created_at ||
     room?.last_message?.created_at ||
+    room?.last_message?.createdAt ||
     room?.updated_at ||
+    room?.updatedAt ||
     room?.created_at ||
+    room?.createdAt ||
     null
+  );
+}
+
+function safeTime(x) {
+  const t = Date.parse(String(x || ''));
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function normalizeKind(r) {
+  const k = String(r?.kind ?? r?.type ?? '').toLowerCase();
+
+  if (k === 'dm' || k === 'direct' || k === 'private') return 'dm';
+  if (k === 'group' || k === 'grp' || k === 'public') return 'group';
+
+  // fallback from booleans
+  if (r?.isGroup === true || r?.is_group === true) return 'group';
+  if (r?.isGroup === false || r?.is_group === false) return 'dm';
+
+  if (r?.is_private === true) return 'dm';
+  if (r?.is_private === false) return 'group';
+
+  return null;
+}
+
+function normalizeUsers(r) {
+  if (Array.isArray(r?.members)) return r.members;       // ✅ standard backend
+  if (Array.isArray(r?.users)) return r.users;           // ✅ old shapes
+  if (Array.isArray(r?.participants)) return r.participants;
+  return [];
+}
+
+function normalizeLastText(r) {
+  const lm =
+    r?.last_message_obj ??
+    r?.last_message ??
+    r?.lastMessage ??
+    r?.last_msg ??
+    null;
+
+  if (typeof lm === 'string') return lm;
+
+  return (
+    lm?.content ??
+    lm?.text ??
+    r?.last_message_text ??
+    ''
   );
 }
 
@@ -38,19 +87,33 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
   const roomsAll = useMemo(() => {
     const arr = toRoomArray(roomsMap);
 
-    const normalized = arr.map((r) => ({
-      ...r,
-      id: r?.id ?? r?.room_id ?? r?.roomId ?? r?.chat_room_id,
-      is_private: Boolean(r?.is_private),
-      last_message: r?.last_message ?? r?.lastMessage ?? null,
-      last_message_at: r?.last_message_at ?? getLastAt(r),
-    }));
+    const normalized = arr
+      .map((r) => {
+        const id = r?.id ?? r?.room_id ?? r?.roomId ?? r?.chat_room_id ?? null;
+        const kind = normalizeKind(r) || 'group';
+        const users = normalizeUsers(r);
 
-    normalized.sort((a, b) => {
-      const ta = new Date(getLastAt(a) || 0).getTime();
-      const tb = new Date(getLastAt(b) || 0).getTime();
-      return tb - ta;
-    });
+        return {
+          ...r,
+          id,
+          kind,
+          is_private: kind === 'dm', // ✅ source of truth
+          users,                    // ✅ always present now
+          last_message: r?.last_message ?? r?.lastMessage ?? r?.last_message_obj ?? null,
+          last_message_at: r?.last_message_at ?? getLastAt(r),
+          // ✅ normalize name/title for UI + search
+          name:
+            r?.name ??
+            r?.title ??
+            r?.display_name ??
+            r?.room_name ??
+            r?.roomTitle ??
+            null,
+        };
+      })
+      .filter((r) => r?.id != null);
+
+    normalized.sort((a, b) => safeTime(getLastAt(b)) - safeTime(getLastAt(a)));
 
     return normalized;
   }, [roomsMap]);
@@ -63,14 +126,27 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
       : all.filter((r) => {
           const name = String(r?.name || '').toLowerCase();
           const desc = String(r?.description || '').toLowerCase();
-          const lastText = String(r?.last_message?.content || '').toLowerCase();
-          return name.includes(q) || desc.includes(q) || lastText.includes(q);
+
+          const lastText = String(normalizeLastText(r) || '').toLowerCase();
+
+          // ✅ DM search: include partner names too
+          const partnerNames = safeArr(r?.users)
+            .map((u) => String(u?.name || u?.email || '').toLowerCase())
+            .join(' ');
+
+          return (
+            name.includes(q) ||
+            desc.includes(q) ||
+            lastText.includes(q) ||
+            partnerNames.includes(q)
+          );
         });
 
-    const groups = filtered.filter((r) => r?.is_private === false);
+    // ✅ split by kind (standard)
+    const groups = filtered.filter((r) => r?.kind === 'group');
 
     const dms = filtered
-      .filter((r) => r?.is_private === true)
+      .filter((r) => r?.kind === 'dm')
       .map((room) => {
         const users = safeArr(room?.users);
 
@@ -81,9 +157,15 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
 
         const partnerId = partner?.id ?? null;
 
-        const lastMsgObj = room?.last_message ?? null;
+        const lastMsgObj =
+          room?.last_message_obj ??
+          room?.last_message ??
+          null;
+
         const lastMsgText =
-          (typeof lastMsgObj === 'string' ? lastMsgObj : lastMsgObj?.content) ||
+          (typeof lastMsgObj === 'string'
+            ? lastMsgObj
+            : lastMsgObj?.content ?? lastMsgObj?.text) ||
           room?.last_message_text ||
           '';
 
@@ -94,6 +176,7 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
           first_name: partner?.name ?? partner?.email ?? 'Unknown',
           email: partner?.email ?? null,
 
+          kind: 'dm',
           is_private: true,
           users,
           last_message_obj: lastMsgObj,
@@ -107,17 +190,17 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
     return { dmList: dms, groupList: groups };
   }, [roomsAll, q, currentUserId]);
 
-  useMemo(() => {
-    if (!DEBUG) return null;
+  useEffect(() => {
+    if (!DEBUG) return;
+
     log('snapshot', {
       roomsCount: roomsAll.length,
       dmCount: dmList.length,
       groupCount: groupList.length,
       currentUserId,
       dmSample: dmList.slice(0, 2).map((x) => ({ roomId: x.roomId, partnerId: x.partnerId })),
-      groupSample: groupList.slice(0, 2).map((x) => ({ id: x.id, name: x.name, is_private: x.is_private })),
+      groupSample: groupList.slice(0, 2).map((x) => ({ id: x.id, name: x.name, kind: x.kind })),
     });
-    return null;
   }, [roomsAll, dmList, groupList, currentUserId]);
 
   return { dmList, groupList, typingIndicators, loading, error };

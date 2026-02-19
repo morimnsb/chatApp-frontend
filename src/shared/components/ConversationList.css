@@ -1,18 +1,19 @@
-/* src/shared/components/ConversationList.css */
+/* chatApp-frontend/src/shared/components/ConversationList.css */
 
-/* --- Avatar ring wrapper --- */
+/* ---- avatar ring wrapper ---- */
 .avatar-ring {
+  position: relative;
   width: 46px;
   height: 46px;
   border-radius: 999px;
+  padding: 2px; /* ring thickness */
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px; /* ring thickness */
   box-sizing: border-box;
 }
 
-/* avatar itself */
+/* avatar image inside ring */
 .profile-img {
   width: 42px;
   height: 42px;
@@ -21,52 +22,41 @@
   display: block;
 }
 
-/* Online / Offline rings */
+/* ---- ring styles ---- */
 .ring-online {
-  background: conic-gradient(from 0deg, #29d36a, #22c55e, #29d36a);
+  background: linear-gradient(135deg, #21d07a, #0dbb63);
 }
 
 .ring-offline {
-  background: conic-gradient(from 0deg, #6b7280, #9ca3af, #6b7280);
+  background: rgba(255, 255, 255, 0.12);
 }
 
-/* groups: neutral ring */
 .ring-group {
-  background: conic-gradient(from 0deg, #3b82f6, #60a5fa, #3b82f6);
+  background: rgba(255, 255, 255, 0.18);
 }
-/* src/shared/components/ConversationList.css */
 
-/* --- Avatar ring wrapper --- */
-.avatar-ring {
-  width: 46px;
-  height: 46px;
+/* ---- online dot ---- */
+.avatar-ring::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 12px;
+  height: 12px;
   border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px; /* ring thickness */
-  box-sizing: border-box;
+
+  /* match your list background */
+  border: 2px solid #10131a;
+
+  background: #666;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 120ms ease, transform 120ms ease;
 }
 
-/* avatar itself */
-.profile-img {
-  width: 42px;
-  height: 42px;
-  border-radius: 999px;
-  object-fit: cover;
-  display: block;
-}
-
-/* Online / Offline rings */
-.ring-online {
-  background: conic-gradient(from 0deg, #29d36a, #22c55e, #29d36a);
-}
-
-.ring-offline {
-  background: conic-gradient(from 0deg, #6b7280, #9ca3af, #6b7280);
-}
-
-/* groups: neutral ring */
-.ring-group {
-  background: conic-gradient(from 0deg, #3b82f6, #60a5fa, #3b82f6);
+/* show dot only when online */
+.ring-online::after {
+  opacity: 1;
+  transform: scale(1);
+  background: #21d07a;
 }

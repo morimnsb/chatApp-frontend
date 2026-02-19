@@ -1,109 +1,96 @@
 // src/services/apiSlice.js
-import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
-import { buildEndpoints, getChosenBackend } from '@/shared/backend';
+import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import { getBackend, resolveApiBase, buildEndpoints } from "@/shared/backend";
 
-/**
- * baseQuery پویا:
- * هر request با توجه به backendChoice، baseUrl جدید می‌گیرد
- */
+const stripBearer = (t) => String(t || "").replace(/^Bearer\s+/i, "").trim();
+const getLS = (k) => {
+  try { return localStorage.getItem(k) || ""; } catch { return ""; }
+};
+
 const dynamicBaseQuery = async (args, api, extraOptions) => {
-  const kind = getChosenBackend(); // از localStorage
-  const endpoints = buildEndpoints(kind);
-
-  const rawBase = endpoints?.base || 'http://localhost:8000/api';
-  const baseUrl = rawBase.replace(/\/+$/, '');
+  const backend = getBackend();                 // ✅ backend object
+  const endpoints = buildEndpoints(backend);    // ✅ paths
+  const baseUrl = resolveApiBase(backend);      // ✅ base url
 
   const baseQuery = fetchBaseQuery({
     baseUrl,
     prepareHeaders: (headers, { getState }) => {
-      const token = getState()?.auth?.token;
-      if (token) headers.set('Authorization', `Bearer ${token}`);
-      headers.set('Accept', 'application/json');
+      const state = getState?.();
+      const tokenFromRedux = state?.auth?.access_token;
+      const tokenFromLS = getLS("access_token");
+      const token = stripBearer(tokenFromRedux || tokenFromLS);
+
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      headers.set("Accept", "application/json");
+      headers.set("Content-Type", "application/json");
       return headers;
     },
-    credentials: 'omit',
+
+    // ✅ برای reverb/laravel شاید credentials لازم باشه
+    // اگر می‌خوای بر اساس backend تصمیم بگیری:
+    credentials: backend.key === "reverb" ? "include" : "omit",
   });
 
+  // ✅ args می‌تونه string باشه یا object. هیچ تغییری لازم نیست.
+  // فقط endpoints باید در queryها استفاده شوند (پایین)
   return baseQuery(args, api, extraOptions);
 };
 
 export const apiSlice = createApi({
-  reducerPath: 'api',
+  reducerPath: "api",
   baseQuery: dynamicBaseQuery,
-  tagTypes: ['Me', 'Users', 'Rooms', 'Messages', 'Friends', 'Convos'],
+  tagTypes: ["Me", "Users", "Rooms", "Messages", "Friends", "Convos"],
   endpoints: (builder) => ({
-    // -----------------
-    // Auth / Me
-    // -----------------
     getMe: builder.query({
-      // ✅ دیگر "/api" را اینجا نمی‌زنیم؛ buildEndpoints base را درست می‌دهد
-      query: () => '/auth/me',
-      providesTags: ['Me'],
+      query: () => buildEndpoints(getBackend()).me,
+      providesTags: ["Me"],
     }),
 
-    // -----------------
-    // Users
-    // -----------------
     getUsers: builder.query({
-      query: () => '/auth/users',
-      providesTags: ['Users'],
+      query: () => buildEndpoints(getBackend()).users,
+      providesTags: ["Users"],
     }),
 
-    // -----------------
-    // Rooms
-    // -----------------
     getRooms: builder.query({
-      query: () => '/chatMeetUp/chatrooms',
-      providesTags: ['Rooms'],
+      query: () => buildEndpoints(getBackend()).rooms,
+      providesTags: ["Rooms"],
     }),
 
-    // -----------------
-    // Conversations
-    // -----------------
     getConversations: builder.query({
-      query: () => '/chatMeetUp/conversations',
-      providesTags: ['Convos'],
+      query: () => buildEndpoints(getBackend()).convos,
+      providesTags: ["Convos"],
     }),
 
-    // -----------------
-    // Messages
-    // -----------------
     getRoomMessages: builder.query({
-      query: (roomId) => `/chatMeetUp/messages/${roomId}`,
-      providesTags: (res, err, roomId) => [{ type: 'Messages', id: roomId }],
+      query: (roomId) => buildEndpoints(getBackend()).roomMessages(roomId),
+      providesTags: (res, err, roomId) => [{ type: "Messages", id: roomId }],
     }),
 
     sendMessage: builder.mutation({
       query: ({ roomId, content }) => ({
-        url: `/chatMeetUp/messages/${roomId}`,
-        method: 'POST',
+        url: buildEndpoints(getBackend()).roomMessages(roomId),
+        method: "POST",
         body: { content },
       }),
-      invalidatesTags: (res, err, { roomId }) => [
-        { type: 'Messages', id: roomId },
-        'Rooms',
-      ],
+      invalidatesTags: (res, err, { roomId }) => [{ type: "Messages", id: roomId }, "Rooms"],
     }),
 
-    // -----------------
-    // Friendship
-    // -----------------
     sendFriendRequest: builder.mutation({
       query: ({ to_user_id }) => ({
-        url: '/chatMeetUp/friendship',
-        method: 'POST',
+        url: buildEndpoints(getBackend()).friend,
+        method: "POST",
         body: { to_user_id },
       }),
-      invalidatesTags: ['Friends'],
+      invalidatesTags: ["Friends"],
     }),
 
     respondFriendRequest: builder.mutation({
       query: ({ friendship_id, action }) => ({
-        url: '/chatMeetUp/friendship/respond',
-        method: 'POST',
+        url: buildEndpoints(getBackend()).friendRespond,
+        method: "POST",
         body: { friendship_id, action },
       }),
-      invalidatesTags: ['Friends'],
+      invalidatesTags: ["Friends"],
     }),
   }),
 });
@@ -112,11 +99,9 @@ export const {
   useGetMeQuery,
   useGetUsersQuery,
   useGetRoomsQuery,
+  useGetConversationsQuery,
   useGetRoomMessagesQuery,
   useSendMessageMutation,
   useSendFriendRequestMutation,
-  useGetConversationsQuery,
   useRespondFriendRequestMutation,
 } = apiSlice;
-
-

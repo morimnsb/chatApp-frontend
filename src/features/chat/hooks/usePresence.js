@@ -1,4 +1,3 @@
-// src/features/chat/hooks/usePresence.js
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getOrCreateEcho } from '@/shared/config/realtime.js';
 
@@ -6,47 +5,47 @@ const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 const log = (...a) => DEBUG && console.log('[usePresence]', ...a);
 
-const PRESENCE_NAME = 'global';
+const PRESENCE_NAME_REVERB = 'global';
+const PRESENCE_NAME_NODE = 'presence.global';
 
 const toIdStr = (u) => {
   const id = u?.id ?? u?.user_id ?? u?.user?.id ?? u;
   return id == null ? null : String(id);
 };
 
-export function usePresence({
-  backendKind,
-  token,
-  currentUserId,
-  onGlobalNotification, // optional: forwarded global notify
-} = {}) {
-  const isReverb = String(backendKind || '').toLowerCase() === 'reverb';
+function buildWsUrlFromApiBase(apiBase, token) {
+  const base = String(apiBase || '').replace(/\/+$/, '');
+  const httpBase = base.endsWith('/api') ? base.slice(0, -4) : base;
+  const wsBase = httpBase.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
+  return `${wsBase}/ws?token=${encodeURIComponent(token || '')}`;
+}
+
+export function usePresence({ backendKind, token, currentUserId } = {}) {
+  const backend = String(backendKind || '').toLowerCase();
+  const isReverb = backend === 'reverb';
+  const isNode = backend === 'node';
+
   const hasToken = Boolean(token);
   const hasUser = Number(currentUserId) > 0;
 
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [connState, setConnState] = useState('unknown');
 
-  const didJoinRef = useRef(false);
-  const lastKeyRef = useRef(null);
-
+  // ---------- Reverb key ----------
   const key = useMemo(() => {
     if (!isReverb || !hasToken || !hasUser) return null;
     const tk = String(token).slice(0, 18);
     return `reverb|presence|${currentUserId}|${tk}`;
   }, [isReverb, hasToken, hasUser, currentUserId, token]);
 
-  useEffect(() => {
-    if (!key) return;
+  // ---------- Node key ----------
+  const nodeKey = useMemo(() => {
+    if (!isNode || !hasToken || !hasUser) return null;
+    const tk = String(token).slice(0, 18);
+    return `node|presence|${currentUserId}|${tk}`;
+  }, [isNode, hasToken, hasUser, currentUserId, token]);
 
-    // اگر key عوض شد، state ریست بشه
-    if (lastKeyRef.current && lastKeyRef.current !== key) {
-      setOnlineUsers([]);
-      didJoinRef.current = false;
-    }
-    lastKeyRef.current = key;
-  }, [key]);
-
-  // --- connection state (debug) ---
+  // ===================== Reverb (همون قبلی) =====================
   useEffect(() => {
     if (!key) return;
 
@@ -77,30 +76,22 @@ export function usePresence({
     };
   }, [key, token]);
 
-  // --- presence join (single join) ---
   useEffect(() => {
     if (!key) return;
 
     const echo = getOrCreateEcho(token);
     if (!echo) return;
 
-    if (didJoinRef.current) return;
-    didJoinRef.current = true;
-
-    log('joining presence...', { name: PRESENCE_NAME, reason: 'initial.connected' });
-
     let ch;
     try {
-      ch = echo.join(PRESENCE_NAME);
+      ch = echo.join(PRESENCE_NAME_REVERB);
 
-      // ✅ snapshot (initial list)
       ch.here((users) => {
         const arr = Array.isArray(users) ? users : [];
         setOnlineUsers(arr);
         log('here ✅', { count: arr.length });
       });
 
-      // ✅ joining
       ch.joining((user) => {
         const id = toIdStr(user);
         if (!id) return;
@@ -111,31 +102,103 @@ export function usePresence({
         });
       });
 
-      // ✅ leaving
       ch.leaving((user) => {
         const id = toIdStr(user);
         if (!id) return;
-        setOnlineUsers((prev) => {
-          const arr = Array.isArray(prev) ? prev : [];
-          return arr.filter((x) => toIdStr(x) !== id);
-        });
+        setOnlineUsers((prev) => (Array.isArray(prev) ? prev.filter((x) => toIdStr(x) !== id) : []));
       });
 
-      log('presence joined ✅', { name: PRESENCE_NAME });
+      setConnState('connected');
+      log('presence joined ✅', { name: PRESENCE_NAME_REVERB });
     } catch (e) {
       log('presence join failed', e);
-      didJoinRef.current = false;
+      setConnState('error');
     }
 
     return () => {
-      // مهم: leave فقط وقتی unmount واقعی شد
-      try {
-        echo.leave(PRESENCE_NAME);
-      } catch {}
-      didJoinRef.current = false;
+      try { echo.leave(PRESENCE_NAME_REVERB); } catch {}
       setOnlineUsers([]);
+      setConnState('idle');
     };
   }, [key, token]);
+
+  // ===================== Node WS Presence =====================
+  useEffect(() => {
+    if (!nodeKey) return;
+
+    const API = String(import.meta.env.VITE_API_URL_NODE || '').replace(/\/+$/, '');
+    if (!API) {
+      setConnState('error-missing-api');
+      return;
+    }
+
+    setOnlineUsers([]);
+    setConnState('connecting');
+
+    const wsUrl = buildWsUrlFromApiBase(API, token);
+    log('[node] presence connecting', { wsUrl });
+
+    const ws = new WebSocket(wsUrl);
+
+    const sendJson = (obj) => {
+      try {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+      } catch {}
+    };
+
+    ws.onopen = () => {
+      setConnState('subscribing');
+      sendJson({ type: 'subscribe', roomId: PRESENCE_NAME_NODE });
+      log('[node] presence subscribe ->', PRESENCE_NAME_NODE);
+    };
+
+    ws.onmessage = (ev) => {
+      let data;
+      try { data = JSON.parse(String(ev?.data ?? '')); } catch { return; }
+
+      // subscribed ack
+      if (data?.type === 'subscribed' && String(data?.roomId) === PRESENCE_NAME_NODE) {
+        setConnState('connected');
+        return;
+      }
+
+      if (data?.type === 'presence_here' && String(data?.room) === PRESENCE_NAME_NODE) {
+        const users = Array.isArray(data?.users) ? data.users : [];
+        setOnlineUsers(users);
+        log('[node] presence_here', { count: users.length });
+        return;
+      }
+
+      if (data?.type === 'presence_join' && String(data?.room) === PRESENCE_NAME_NODE) {
+        const u = data?.user;
+        const id = toIdStr(u);
+        if (!id) return;
+        setOnlineUsers((prev) => {
+          const arr = Array.isArray(prev) ? prev : [];
+          if (arr.some((x) => toIdStr(x) === id)) return arr;
+          return [...arr, u];
+        });
+        return;
+      }
+
+      if (data?.type === 'presence_leave' && String(data?.room) === PRESENCE_NAME_NODE) {
+        const u = data?.user;
+        const id = toIdStr(u);
+        if (!id) return;
+        setOnlineUsers((prev) => (Array.isArray(prev) ? prev.filter((x) => toIdStr(x) !== id) : []));
+        return;
+      }
+    };
+
+    ws.onerror = () => setConnState('error');
+    ws.onclose = () => setConnState('idle');
+
+    return () => {
+      try { ws.close(); } catch {}
+      setConnState('idle');
+      setOnlineUsers([]);
+    };
+  }, [nodeKey, token]);
 
   return { onlineUsers, connState };
 }

@@ -48,20 +48,20 @@ export default React.memo(function MessageBubble({ message, currentUserId, index
     String(n.senderId) === String(currentUserId);
 
   // اگر content خالیه، اینجا دیباگ می‌کنیم ولی null نکن!
-  useEffect(() => {
-    if (!DEBUG) return;
-    // eslint-disable-next-line no-console
-    console.log('[MessageBubble] render', {
-      index,
-      id: message?.id,
-      roomId: n.roomId,
-      senderId: n.senderId,
-      currentUserId,
-      mine,
-      contentLen: n.content?.length ?? 0,
-      keys: Object.keys(message || {}).slice(0, 14),
-    });
-  }, [DEBUG, index, message, n.roomId, n.senderId, n.content, currentUserId, mine]);
+  // useEffect(() => {
+  //   if (!DEBUG) return;
+  //   // eslint-disable-next-line no-console
+  //   console.log('[MessageBubble] render', {
+  //     index,
+  //     id: message?.id,
+  //     roomId: n.roomId,
+  //     senderId: n.senderId,
+  //     currentUserId,
+  //     mine,
+  //     contentLen: n.content?.length ?? 0,
+  //     keys: Object.keys(message || {}).slice(0, 14),
+  //   });
+  // }, [DEBUG, index, message, n.roomId, n.senderId, n.content, currentUserId, mine]);
 
   return (
     <div className={`message-bubble ${mine ? 'mine' : 'theirs'}`} role="listitem">

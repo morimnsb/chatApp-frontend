@@ -1,448 +1,327 @@
-// src/store/authSlice.js
+// chatApp-frontend/src/app/store/authSlice.js
 import { createSlice, createAsyncThunk, isAnyOf } from '@reduxjs/toolkit';
-import axios from 'axios';
+import apiClient from '@/shared/api/apiClient';
+import { hardResetSocket } from '@/shared/ws/socketClient';
 
-const API_BASE =
-  import.meta.env.VITE_API_URL?.replace(/\/+$/, '') || 'http://localhost:8000';
-
-// ------ helpers: localStorage & parsing ------
+/* -------------------- helpers -------------------- */
 
 const STORAGE_KEYS = {
-  token: 'token',
-  refresh: 'refresh_token',
-  expiresAt: 'expires_at', // ms timestamp
+  access: 'access_token',
+  refresh: 'refresh_token', // (اختیاری) اگر بعداً خواستی refresh رو localStorage نگه داری
+  expiresAt: 'expires_at',
 };
+
+const stripBearer = (t) => String(t || '').replace(/^Bearer\s+/i, '').trim();
 
 function loadAuthFromStorage() {
   try {
-    const token = localStorage.getItem(STORAGE_KEYS.token) || null;
-    const refreshToken = localStorage.getItem(STORAGE_KEYS.refresh) || null;
+    const access_token = stripBearer(localStorage.getItem(STORAGE_KEYS.access) || '');
+    const refreshToken = stripBearer(localStorage.getItem(STORAGE_KEYS.refresh) || '');
     const rawExpiresAt = localStorage.getItem(STORAGE_KEYS.expiresAt);
     const expiresAt = rawExpiresAt ? Number(rawExpiresAt) || null : null;
 
-    return { token, refreshToken, expiresAt };
+    return {
+      access_token: access_token || null,
+      refreshToken: refreshToken || null,
+      expiresAt,
+    };
   } catch {
-    return { token: null, refreshToken: null, expiresAt: null };
+    return { access_token: null, refreshToken: null, expiresAt: null };
   }
 }
 
-function saveAuthToStorage({ token, refreshToken, expiresAt }) {
+function saveAuthToStorage({ access_token, refreshToken, expiresAt }) {
   try {
-    if (token) localStorage.setItem(STORAGE_KEYS.token, token);
-    else localStorage.removeItem(STORAGE_KEYS.token);
+    if (access_token) localStorage.setItem(STORAGE_KEYS.access, stripBearer(access_token));
+    else localStorage.removeItem(STORAGE_KEYS.access);
 
-    if (refreshToken) localStorage.setItem(STORAGE_KEYS.refresh, refreshToken);
+    // ✅ اگر refresh رو cookie نگه می‌داری، می‌تونی کلاً این رو خاموش کنی
+    if (refreshToken) localStorage.setItem(STORAGE_KEYS.refresh, stripBearer(refreshToken));
     else localStorage.removeItem(STORAGE_KEYS.refresh);
 
-    if (expiresAt)
-      localStorage.setItem(STORAGE_KEYS.expiresAt, String(expiresAt));
+    if (expiresAt) localStorage.setItem(STORAGE_KEYS.expiresAt, String(expiresAt));
     else localStorage.removeItem(STORAGE_KEYS.expiresAt);
-  } catch {
-    // در حالت آموزشی، نادیده می‌گیریم
-  }
+  } catch {}
 }
 
 function clearAuthStorage() {
-  saveAuthToStorage({ token: null, refreshToken: null, expiresAt: null });
+  saveAuthToStorage({ access_token: null, refreshToken: null, expiresAt: null });
 }
 
-// داده‌های برگشتی بک‌اند (هر فرمتی) → شکل استاندارد ما
 function parseAuthResponse(data) {
   if (!data || typeof data !== 'object') return {};
 
-  const token =
-    data.token || data.access || data.access_token || data.idToken || null;
+  const access_token = data.access_token || data.access || data.token || data.idToken || null;
 
-  const refreshToken =
-    data.refresh_token || data.refreshToken || data.refresh || null;
+  const refreshToken = data.refresh_token || data.refreshToken || data.refresh || null;
 
-  // expires_at می‌تونه:
-  // - رشته datetime/ISO
-  // - timestamp (ms)
-  // - اصلاً نباشه و فقط expires_in داشته باشیم
   let expiresAt = null;
-
   if (data.expires_at) {
     const raw = data.expires_at;
-    if (typeof raw === 'number') {
-      expiresAt = raw;
-    } else {
+    if (typeof raw === 'number') expiresAt = raw;
+    else {
       const t = Date.parse(raw);
       if (!Number.isNaN(t)) expiresAt = t;
     }
   } else if (data.expires_in) {
-    // expires_in → ثانیه از الان
     const secs = Number(data.expires_in);
-    if (!Number.isNaN(secs)) {
-      expiresAt = Date.now() + secs * 1000;
-    }
+    if (!Number.isNaN(secs)) expiresAt = Date.now() + secs * 1000;
   }
 
   return {
-    token: token || null,
-    refreshToken: refreshToken || null,
+    access_token: access_token ? stripBearer(access_token) : null,
+    refreshToken: refreshToken ? stripBearer(refreshToken) : null,
     expiresAt: expiresAt || null,
-    user: data.user || null,
+    user: data.user || data.me || null,
   };
 }
 
-// ------ Thunks ------
+/* -------------------- THUNKS -------------------- */
 
-// ثبت‌نام: فقط دیتا رو برمی‌گردونه (پیام، email، OTP و...)
-export const registerThunk = createAsyncThunk(
-  'auth/register',
-  async (payload, { rejectWithValue }) => {
-    try {
-      const res = await axios.post(`${API_BASE}/api/auth/register`, payload);
-      // این‌جا معمولاً state auth رو عوض نمی‌کنیم
-      // فقط دیتا رو به کامپوننت می‌فرستیم (message, email, otp)
-      return res.data;
-    } catch (err) {
-      const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.message ||
-        err.message ||
-        'Register failed';
-      return rejectWithValue(msg);
-    }
-  },
-);
-
-// تأیید ایمیل با OTP: بعد از موفقیت → مثل login، توکن‌ها و user رو ست می‌کند
-export const verifyEmailThunk = createAsyncThunk(
-  'auth/verifyEmail',
-  async (payload, { rejectWithValue }) => {
-    try {
-      const res = await axios.post(
-        `${API_BASE}/api/auth/verify-email`,
-        payload, // { email, otp }
-      );
-      const parsed = parseAuthResponse(res.data);
-      if (!parsed.token) {
-        throw new Error('No token returned from verify-email endpoint');
-      }
-      return parsed;
-    } catch (err) {
-      const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.message ||
-        err.message ||
-        'Verify email failed';
-      return rejectWithValue(msg);
-    }
-  },
-);
-
-// لاگین: {email, password} → token, refresh, user
 export const loginThunk = createAsyncThunk(
   'auth/login',
   async (credentials, { rejectWithValue }) => {
     try {
-      const res = await axios.post(`${API_BASE}/api/auth/login`, credentials);
+      const res = await apiClient.post('/auth/login', credentials);
       const parsed = parseAuthResponse(res.data);
-      if (!parsed.token) {
-        throw new Error('No token returned from login endpoint');
-      }
+      if (!parsed.access_token) throw new Error('No access_token returned');
       return parsed;
     } catch (err) {
-      const msg =
-        err.response?.data?.detail ||
+      return rejectWithValue(
         err.response?.data?.message ||
-        err.message ||
-        'Login failed';
-      return rejectWithValue(msg);
+          err.response?.data?.detail ||
+          err.message ||
+          'Login failed'
+      );
     }
-  },
+  }
 );
 
-// گرفتن اطلاعات خود کاربر (me)
 export const meThunk = createAsyncThunk(
   'auth/me',
-  async (_, { rejectWithValue, getState }) => {
+  async (_, { rejectWithValue }) => {
     try {
-      const state = getState();
-      const token =
-        state.auth.token || localStorage.getItem(STORAGE_KEYS.token);
-
-      if (!token) {
-        throw new Error('No access token');
-      }
-
-      const res = await axios.get(`${API_BASE}/api/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
+      const res = await apiClient.get('/auth/me');
       return res.data;
     } catch (err) {
-      const msg =
-        err.response?.data?.detail ||
+      return rejectWithValue(
         err.response?.data?.message ||
-        err.message ||
-        'Me request failed';
-      return rejectWithValue(msg);
+          err.response?.data?.detail ||
+          err.message ||
+          'Me request failed'
+      );
     }
-  },
+  }
 );
 
-// رفرش توکن
 export const refreshThunk = createAsyncThunk(
   'auth/refresh',
-  async (_, { getState, rejectWithValue }) => {
+  async (_, { rejectWithValue }) => {
     try {
-      const state = getState();
-      const refreshToken =
-        state.auth.refreshToken || localStorage.getItem(STORAGE_KEYS.refresh);
-
-      if (!refreshToken) {
-        throw new Error('No refresh token');
-      }
-
-      const res = await axios.post(`${API_BASE}/api/auth/refresh`, {
-        refresh_token: refreshToken,
-      });
-
+      // ✅ Node backend refresh از cookie می‌خونه → body لازم نیست
+      const res = await apiClient.post('/auth/refresh', {});
       const parsed = parseAuthResponse(res.data);
-      if (!parsed.token) {
-        throw new Error('No token returned from refresh endpoint');
-      }
+      if (!parsed.access_token) throw new Error('No access_token returned');
       return parsed;
     } catch (err) {
-      const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.message ||
-        err.message ||
-        'Refresh failed';
-      return rejectWithValue(msg);
+      return rejectWithValue('Refresh failed');
     }
-  },
+  }
 );
 
-// لاگ‌اوت از بک‌اند (اختیاری)، سپس پاک‌سازی لوکال
 export const logoutThunk = createAsyncThunk(
   'auth/logout',
-  async (_, { getState, rejectWithValue }) => {
+  async (_, { rejectWithValue }) => {
     try {
-      const state = getState();
-      const refreshToken =
-        state.auth.refreshToken || localStorage.getItem(STORAGE_KEYS.refresh);
-
-      if (refreshToken) {
-        // اگر بک‌اندت logout API ندارد، می‌توانی این قسمت را حذف کنی
-        await axios.post(`${API_BASE}/api/auth/logout`, {
-          refresh_token: refreshToken,
-        });
-      }
-
+      // ✅ logout هم refresh را از cookie می‌خواند
+      await apiClient.post('/auth/logout', {});
+      hardResetSocket('logout');
       return true;
     } catch (err) {
-      // در لاگ‌اوت معمولاً خطا را kill نمی‌کنیم، فقط گزارش می‌کنیم
-      const msg =
-        err.response?.data?.detail ||
+      return rejectWithValue(
         err.response?.data?.message ||
-        err.message ||
-        'Logout failed';
-      return rejectWithValue(msg);
+          err.response?.data?.detail ||
+          err.message ||
+          'Logout failed'
+      );
     }
-  },
+  }
 );
 
-// ------ Initial State ------
+/* -------------------- SLICE -------------------- */
 
 const stored = loadAuthFromStorage();
 
 const initialState = {
-  user: null,
-  token: stored.token,
+  currentUser: null,
+  access_token: stored.access_token,
   refreshToken: stored.refreshToken,
-  expiresAt: stored.expiresAt, // ms timestamp یا null
-  status: 'idle', // 'idle' | 'loading' | 'succeeded' | 'failed'
+  expiresAt: stored.expiresAt,
+  status: 'idle',
   error: null,
-  bootstrapped: false, // یعنی meThunk حداقل یک‌بار اجرا شده
+  bootstrapped: false, // ✅ مهم برای ProtectedRoute
 };
-
-// ------ Slice ------
 
 const authSlice = createSlice({
   name: 'auth',
   initialState,
   reducers: {
+    // ✅ برای verify-email یا هر جایی که access_token داری
     hydrateAuth(state, action) {
       const payload = action.payload || {};
-      Object.assign(state, payload);
+
+      const access =
+        payload.access_token ?? payload.access ?? payload.token ?? null;
+
+      const refresh =
+        payload.refreshToken ?? payload.refresh_token ?? payload.refresh ?? null;
+
+      const user =
+        payload.user ?? payload.me ?? payload.currentUser ?? null;
+
+      if (access) state.access_token = stripBearer(access);
+      if (refresh) state.refreshToken = stripBearer(refresh);
+
+      if (payload.expiresAt != null) state.expiresAt = payload.expiresAt;
+
+      if (payload.expires_at != null) {
+        if (typeof payload.expires_at === 'number') state.expiresAt = payload.expires_at;
+        else {
+          const t = Date.parse(payload.expires_at);
+          if (!Number.isNaN(t)) state.expiresAt = t;
+        }
+      }
+
+      if (user) state.currentUser = user;
+
+      // ✅ بعد از verify/login دستی، ProtectedRoute گیر نکنه
+      state.bootstrapped = true;
+      state.error = null;
+
+      saveAuthToStorage({
+        access_token: state.access_token,
+        refreshToken: state.refreshToken,
+        expiresAt: state.expiresAt,
+      });
     },
 
     localLogout(state) {
-      state.user = null;
-      state.token = null;
+      state.currentUser = null;
+      state.access_token = null;
       state.refreshToken = null;
       state.expiresAt = null;
       state.status = 'idle';
       state.error = null;
+      state.bootstrapped = true;
       clearAuthStorage();
-    },
-
-    setLoading(state, action) {
-      const isLoading = Boolean(action.payload);
-      state.status = isLoading ? 'loading' : 'idle';
     },
 
     clearError(state) {
       state.error = null;
     },
 
-    // ✅ add this
     markBootstrapped(state) {
       state.bootstrapped = true;
     },
   },
 
   extraReducers: (builder) => {
-    builder.addCase(registerThunk.fulfilled, () => {});
+    const applyAuth = (state, payload) => {
+      if (payload.access_token) state.access_token = payload.access_token;
+      if (payload.refreshToken) state.refreshToken = payload.refreshToken;
+      if (payload.expiresAt) state.expiresAt = payload.expiresAt;
 
-    builder.addCase(verifyEmailThunk.fulfilled, (state, action) => {
-      state.user = action.payload.user || null;
-      state.token = action.payload.token || null;
-      state.refreshToken = action.payload.refreshToken || null;
-      state.expiresAt = action.payload.expiresAt || null;
+      if (payload.user) state.currentUser = payload.user;
+
       saveAuthToStorage({
-        token: state.token,
+        access_token: state.access_token,
         refreshToken: state.refreshToken,
         expiresAt: state.expiresAt,
       });
-    });
+    };
 
     builder.addCase(loginThunk.fulfilled, (state, action) => {
-      state.user = action.payload.user || null;
-      state.token = action.payload.token || null;
-      state.refreshToken = action.payload.refreshToken || null;
-      state.expiresAt = action.payload.expiresAt || null;
-      saveAuthToStorage({
-        token: state.token,
-        refreshToken: state.refreshToken,
-        expiresAt: state.expiresAt,
-      });
+      applyAuth(state, action.payload);
     });
 
     builder
       .addCase(meThunk.fulfilled, (state, action) => {
-        state.user = action.payload || null;
+        state.currentUser = action.payload || null;
         state.bootstrapped = true;
       })
-      .addCase(meThunk.rejected, (state, action) => {
-  state.user = null;
-  state.bootstrapped = true;
-
-  // ❌ این‌ها را فعلاً نزن چون باعث logout-loop میشه
-  // state.token = null;
-  // state.refreshToken = null;
-  // state.expiresAt = null;
-  // clearAuthStorage();
-
-  // ✅ فقط error را ذخیره کن
-  state.error = action.payload || action.error?.message || 'Me request failed';
-})
-
+      .addCase(meThunk.rejected, (state) => {
+        state.currentUser = null;
+        state.bootstrapped = true;
+      });
 
     builder.addCase(refreshThunk.fulfilled, (state, action) => {
-      state.token = action.payload.token || null;
-      state.refreshToken = action.payload.refreshToken || null;
-      state.expiresAt = action.payload.expiresAt || null;
-      saveAuthToStorage({
-        token: state.token,
-        refreshToken: state.refreshToken,
-        expiresAt: state.expiresAt,
-      });
+      applyAuth(state, action.payload);
     });
 
     builder.addCase(logoutThunk.fulfilled, (state) => {
-      state.user = null;
-      state.token = null;
+      state.currentUser = null;
+      state.access_token = null;
       state.refreshToken = null;
       state.expiresAt = null;
       state.status = 'idle';
       state.error = null;
+      state.bootstrapped = true;
       clearAuthStorage();
     });
 
     builder.addMatcher(
-      isAnyOf(
-        registerThunk.pending,
-        verifyEmailThunk.pending,
-        loginThunk.pending,
-        meThunk.pending,
-        refreshThunk.pending,
-        logoutThunk.pending,
-      ),
+      isAnyOf(loginThunk.pending, meThunk.pending, refreshThunk.pending, logoutThunk.pending),
       (state) => {
         state.status = 'loading';
         state.error = null;
-      },
+      }
     );
 
     builder.addMatcher(
-      isAnyOf(
-        registerThunk.fulfilled,
-        verifyEmailThunk.fulfilled,
-        loginThunk.fulfilled,
-        meThunk.fulfilled,
-        refreshThunk.fulfilled,
-        logoutThunk.fulfilled,
-      ),
+      isAnyOf(loginThunk.fulfilled, meThunk.fulfilled, refreshThunk.fulfilled, logoutThunk.fulfilled),
       (state) => {
-        if (state.status === 'loading') state.status = 'succeeded';
-      },
+        state.status = 'succeeded';
+      }
     );
 
     builder.addMatcher(
-      isAnyOf(
-        registerThunk.rejected,
-        verifyEmailThunk.rejected,
-        loginThunk.rejected,
-        meThunk.rejected,
-        refreshThunk.rejected,
-        logoutThunk.rejected,
-      ),
+      isAnyOf(loginThunk.rejected, meThunk.rejected, refreshThunk.rejected, logoutThunk.rejected),
       (state, action) => {
         state.status = 'failed';
-        state.error = action.payload || action.error?.message || 'Unknown error';
-      },
+        state.error = action.payload || 'Auth error';
+      }
     );
   },
 });
 
+export const { localLogout, clearError, markBootstrapped, hydrateAuth } = authSlice.actions;
 
-// ------ Actions ------
+export default authSlice.reducer;
 
-export const { hydrateAuth, localLogout, setLoading, clearError, markBootstrapped } =
-  authSlice.actions;
-
-
-// برای راحتی بعضی جاها (اگر می‌خواهی مستقیم استفاده کنی)
-export const { reducer: authReducer } = authSlice;
-
-// ------ Selectors ------
+/* -------------------- SELECTORS -------------------- */
 
 export const selectAuth = (state) => state.auth;
-export const selectCurrentUser = (state) => state.auth.user;
+export const selectCurrentUser = (state) => state.auth.currentUser;
 export const selectBootstrapped = (state) => state.auth.bootstrapped;
-export const selectToken = (state) => state.auth.token;
+
+export const selectAccessToken = (state) => state.auth.access_token;
 export const selectRefreshToken = (state) => state.auth.refreshToken;
 export const selectExpiresAt = (state) => state.auth.expiresAt;
+
 export const selectAuthStatus = (state) => state.auth.status;
 export const selectAuthError = (state) => state.auth.error;
 
-// سازگار با ProtectedRoute / LoginForm
 export const selectIsLoggedIn = (state) =>
-  Boolean(state.auth.token && state.auth.user);
+  Boolean(state.auth.access_token && state.auth.currentUser);
 
-// برای auto-expiration / auto-refresh در listenerMiddleware
 export const selectIsTokenExpired = (state) => {
-  const { token, expiresAt } = state.auth;
-  if (!token) return true;
-  if (!expiresAt) return false; // اگر expiry نداریم، فرض می‌کنیم باز است
+  const { access_token, expiresAt } = state.auth;
+  if (!access_token) return true;
+  if (!expiresAt) return false;
   return Date.now() >= expiresAt;
 };
 
-// ------ Default export (برای configureStore) ------
-
-export default authSlice.reducer;
+// backward compatibility
+export const selectToken = (state) => state.auth.access_token;
+export const selectBareToken = (state) =>
+  String(state.auth.access_token || '').replace(/^Bearer\s+/i, '').trim();

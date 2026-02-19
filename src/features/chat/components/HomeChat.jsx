@@ -1,7 +1,11 @@
-// src/components/HomeChat.jsx
-import React, { useEffect, useMemo, useReducer, useRef } from 'react';
+// chatApp-frontend/src/components/HomeChat.jsx
+import React, { useEffect, useMemo, useReducer, useRef, useCallback } from 'react';
 import { Container, Row, Col } from 'react-bootstrap';
 import { useDispatch, useSelector } from 'react-redux';
+import { getOrCreateEcho } from '@/shared/config/realtime.js';
+
+// ✅ socketClient only (Node)
+import { subscribeChatMessage, subscribeTyping, emitTypingIndicator } from '@/shared/ws/socketClient';
 
 import LogoutButton from '@/features/auth/components/LogoutButton.jsx';
 import Header from '@/shared/components/Header';
@@ -22,11 +26,21 @@ import { useUsersQuery } from '@/features/chat/hooks/useUsersQuery.js';
 import { useChatLists } from '@/features/chat/hooks/useChatLists.js';
 
 import useEvent from '@/shared/hooks/useEvent.js';
+import useNodeSocket from '@/features/chat/hooks/useNodeSocket.js';
+import usePresenceMerge from '@/features/chat/hooks/usePresenceMerge.js';
+
 import './HomeChat.css';
 
+// ✅ Laravel(Reverb) events + router
+import { routeRealtimePayload } from '@/features/chat/utils/wsRouter.js';
+import { Link } from "react-router-dom";
+
+import useReverbConnState from "@/features/chat/hooks/useReverbConnState";
+ import { useRealtimeBus } from "@/features/chat/providers/ChatRealtimeProvider";; // مسیرت رو درست کن
+import apiClient from '@/shared/api/apiClient'; // ✅ add
+
 const DEBUG_CHAT =
-  import.meta.env.DEV === true &&
-  String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+  import.meta.env.DEV === true && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
 
 function reducer(state, action) {
   switch (action.type) {
@@ -36,6 +50,8 @@ function reducer(state, action) {
       return { ...state, showUsers: action.value ?? !state.showUsers };
     case 'SELECT_ROOM':
       return { ...state, roomId: action.roomId ?? null };
+    case 'RESET_ROOM':
+      return { ...state, roomId: null };
     default:
       return state;
   }
@@ -58,20 +74,12 @@ function EmptyRoom() {
     >
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: 16, fontWeight: 600 }}>هیچ چتی انتخاب نشده</div>
-        <div style={{ marginTop: 8, opacity: 0.8 }}>
-          از لیست سمت چپ یک گفتگو را انتخاب کن.
-        </div>
+        <div style={{ marginTop: 8, opacity: 0.8 }}>از لیست سمت چپ یک گفتگو را انتخاب کن.</div>
       </div>
     </div>
   );
 }
 
-const toIdStr = (u) => {
-  const id = u?.id ?? u?.user_id ?? u?.user?.id ?? u?.pivot?.user_id ?? u;
-  return id == null ? null : String(id);
-};
-
-const safeLen = (arr) => (Array.isArray(arr) ? arr.length : 0);
 const stableJson = (x) => {
   try {
     return JSON.stringify(x);
@@ -90,60 +98,183 @@ export default function HomeChat() {
 
   const { bareToken, currentUser, currentUserId } = useAuthBasics();
 
+  // ✅ ChatWindow will register a handler here
+  const incomingRef = useRef(null);
+  const registerIncoming = useCallback((handler) => {
+    incomingRef.current = handler;
+    return () => {
+      if (incomingRef.current === handler) incomingRef.current = null;
+    };
+  }, []);
+const reverbConnState = useReverbConnState({ backendKind: effectiveKind, token: bareToken });
+
+  const onGlobalNotif = useGlobalNotify({ selectedRoom: roomId });
+
+const realtime = useRealtimeBus();
+  // ✅ keep latest room/user ids (fallback)
+  const selectedRoomIdRef = useRef(null);
+  const currentUserIdRef = useRef(null);
+  useEffect(() => {
+    selectedRoomIdRef.current = roomId;
+  }, [roomId]);
+  useEffect(() => {
+    currentUserIdRef.current = currentUserId;
+  }, [currentUserId]);
+
+  // ✅ wsRouter -> dispatch adapter (routes to ChatWindow + global notify)
+  const routerDispatch = useCallback(
+    (action) => {
+      if (!action || typeof action !== 'object') return;
+
+      switch (action.type) {
+        case 'chat/wsTyping': {
+          const p = action.payload || {};
+          incomingRef.current?.({
+            type: 'typing_indicator',
+            roomId: p.roomId,
+            userId: p.userId,
+            isTyping: p.isTyping,
+            at: p.at,
+          });
+          return;
+        }
+
+        case 'chat/wsMessage': {
+          const p = action.payload || {};
+          incomingRef.current?.({
+            type: 'message',
+            room_id: p.roomId,
+            message: p.message,
+          });
+          return;
+        }
+
+        case 'chat/wsNotify': {
+          const p = action.payload || {};
+          onGlobalNotif?.({
+            type: 'notify',
+            room_id: p.roomId,
+            roomId: p.roomId,
+            message: p.message,
+          });
+          return;
+        }
+
+        case 'chat/wsDebug': {
+          if (DEBUG_CHAT) console.log('[wsRouter][DBG]', action.payload);
+          return;
+        }
+
+        default:
+          return;
+      }
+    },
+    [onGlobalNotif],
+  );
+
+  // ✅ Unified realtime handler (Node + Reverb) -> wsRouter
+  const onRealtimePayload = useCallback(
+    (payload, meta) => {
+      routeRealtimePayload(payload, {
+        dispatch: routerDispatch,
+
+        // ✅ meta wins (prevents stale room during switches)
+        selectedRoomId: meta?.selectedRoomId ?? selectedRoomIdRef.current,
+        currentUserId: meta?.currentUserId ?? currentUserIdRef.current,
+
+        sourceEventName: meta?.eventName ?? meta?.sourceEventName ?? null,
+        eventName: meta?.eventName ?? meta?.sourceEventName ?? null,
+      });
+    },
+    [routerDispatch],
+  );
+
+  // ✅ Node socket events (route via wsRouter)
+  useEffect(() => {
+    const isNodeBackend = effectiveKind === 'node' || effectiveKind === 'nest';
+    if (!isNodeBackend) return;
+
+    const unsubMsg = subscribeChatMessage((payload) => {
+      onRealtimePayload(payload, { eventName: 'chat:message', source: 'node' });
+    });
+
+    const unsubTyping = subscribeTyping((payload) => {
+      onRealtimePayload(payload, { eventName: 'typing', source: 'node' });
+    });
+
+    return () => {
+      try {
+        unsubMsg?.();
+      } catch {}
+      try {
+        unsubTyping?.();
+      } catch {}
+    };
+  }, [effectiveKind, onRealtimePayload]);
+
+ 
+
+useEffect(() => {
+  if (!realtime?.registerHandler) return;
+  return realtime.registerHandler((payload, meta) => {
+    onRealtimePayload(payload, meta);
+  });
+}, [realtime, onRealtimePayload]);
+
+  // ✅ reset selected room when backend or token changes (avoid wrong room:join)
+  const prevCtxRef = useRef({ kind: null, tokenSig: null });
+  useEffect(() => {
+    const tokenSig = bareToken ? `t:${bareToken.length}` : 't:0';
+    const prev = prevCtxRef.current;
+
+    if (prev.kind !== effectiveKind || prev.tokenSig !== tokenSig) {
+      prevCtxRef.current = { kind: effectiveKind, tokenSig };
+      ui({ type: 'RESET_ROOM' });
+      dispatch(selectRoom(null));
+    }
+  }, [effectiveKind, bareToken, dispatch]);
+
   // lists
   const { dmList, groupList, typingIndicators, loading, error } = useChatLists({
     searchQuery: q,
     currentUserId,
   });
 
-  // ✅ useChatData خودش fetch می‌کند
+  // fetch rooms + convos
   const { retryRooms, retryConvos } = useChatData({ endpoints, accessToken: bareToken });
 
-  // ✅ store debug
-  const roomsMapDebug = useSelector((s) => s?.messages?.groupMessages);
-  useEffect(() => {
-    if (!DEBUG_CHAT) return;
-    console.log('[HomeChat] store rooms keys', {
-      slice: roomsMapDebug ? 'messages.groupMessages' : 'missing',
-      keys: roomsMapDebug ? Object.keys(roomsMapDebug).slice(0, 8) : null,
-    });
-  }, [roomsMapDebug]);
-
   // users query
-  const { usersQ, filteredUsers, handleFriendshipRequest, handleRespondFriendRequest } =
-    useUsersQuery({ bareToken, searchQuery: q, retryRooms });
+  const { usersQ, filteredUsers, handleFriendshipRequest, handleRespondFriendRequest } = useUsersQuery(
+    { bareToken, searchQuery: q, retryRooms },
+  );
 
-  const onGlobalNotif = useGlobalNotify({
-    selectedRoom: roomId,
-    setSelectedRoom: (id) => ui({ type: 'SELECT_ROOM', roomId: id }),
+  // Reverb presence
+  const { onlineUsers: onlineUsersReverb } = usePresence({
+  backendKind: effectiveKind,
+  token: bareToken,
+  currentUserId,
+  onGlobalNotification: onGlobalNotif,
+});
+
+const connStateReverb = reverbConnState; // ✅ real Echo connection state
+
+
+  // Node presence
+  const { isNode, connState: connStateNode, onlineUsers: onlineUsersNode } = useNodeSocket({
+    effectiveKind,
+    selectedRoomId: roomId,
+    onNotify: onGlobalNotif,
   });
 
-  // ✅ Presence (online users)
-  const { onlineUsers, connState } = usePresence({
-    backendKind: effectiveKind,
-    token: bareToken,
-    currentUserId,
-    onGlobalNotification: onGlobalNotif,
+  // merge presence
+  const { onlineUsers, connState, dmListWithPresence } = usePresenceMerge({
+    isNode,
+    onlineUsersNode,
+    connStateNode,
+    onlineUsersReverb,
+    connStateReverb,
+    dmList,
   });
-
-  // (Optional) still keep your local is_online enrichment
-  const onlineIdSet = useMemo(() => {
-    const set = new Set();
-    (Array.isArray(onlineUsers) ? onlineUsers : []).forEach((u) => {
-      const s = toIdStr(u);
-      if (s) set.add(s);
-    });
-    return set;
-  }, [onlineUsers]);
-
-  const dmListWithPresence = useMemo(() => {
-    const list = Array.isArray(dmList) ? dmList : [];
-    return list.map((convo) => {
-      const pid = convo?.partnerId ?? convo?.partner?.id ?? convo?.user_id ?? null;
-      const isOnline = pid != null ? onlineIdSet.has(String(pid)) : false;
-      return { ...convo, is_online: isOnline };
-    });
-  }, [dmList, onlineIdSet]);
 
   const onSelectChat = useEvent((nextRoomId, receiverId) => {
     ui({ type: 'SELECT_ROOM', roomId: nextRoomId });
@@ -154,101 +285,84 @@ export default function HomeChat() {
   const onRetryAll = useEvent(() => {
     retryRooms?.();
     retryConvos?.();
-    usersQ.refetch?.();
+    usersQ?.refetch?.();
   });
 
   const setSearchQuery = useEvent((value) => ui({ type: 'SET_QUERY', q: value }));
   const setShowUsers = useEvent((value) => ui({ type: 'TOGGLE_USERS', value }));
 
-  // =========================
-  // ✅ DEBUGS (no spam)
-  // =========================
-  const prevRef = useRef({ state: '', presence: '', dm: '', usersQ: '', conn: '' });
-
-  useEffect(() => {
-    if (!DEBUG_CHAT) return;
-    const sig = stableJson({ connState });
-    if (sig !== prevRef.current.conn) {
-      prevRef.current.conn = sig;
-      console.log('[HomeChat] ws state', { connState });
-    }
-  }, [connState]);
+  // debug (no spam)
+  const roomsMapDebug = useSelector((s) => s?.messages?.groupMessages);
+  const prevDbgRef = useRef({ sig: '' });
 
   useEffect(() => {
     if (!DEBUG_CHAT) return;
 
-    const payload = {
+    const sig = stableJson({
       backend: effectiveKind,
+      connState,
       roomId,
-      qLen: (q || '').length,
-      currentUserId,
-      hasToken: Boolean(bareToken),
-      roomsUrl: endpoints?.rooms,
-      convosUrl: endpoints?.convos,
-    };
-    const sig = stableJson(payload);
+      roomsKeys: roomsMapDebug ? Object.keys(roomsMapDebug).length : 0,
+    });
 
-    if (sig !== prevRef.current.state) {
-      prevRef.current.state = sig;
-      console.log('[HomeChat] state signature', payload);
+    if (sig !== prevDbgRef.current.sig) {
+      prevDbgRef.current.sig = sig;
+      console.log('[HomeChat] ws state', { backend: effectiveKind, connState, roomId });
     }
-  }, [effectiveKind, roomId, q, currentUserId, bareToken, endpoints]);
+  }, [effectiveKind, connState, roomId, roomsMapDebug]);
 
-  useEffect(() => {
-    if (!DEBUG_CHAT) return;
+  // ✅ sendTyping contract expected by ChatWindow
 
-    const ids = Array.from(onlineIdSet);
-    const payload = {
-      backend: effectiveKind,
-      currentUserId,
-      onlineCount: ids.length,
-      onlineIds: ids,
-    };
-    const sig = stableJson(payload);
 
-    if (sig !== prevRef.current.presence) {
-      prevRef.current.presence = sig;
-      console.log('[HomeChat] presence', payload);
+const sendTyping = useCallback(
+  ({ roomId: rid, isTyping }) => {
+    const backend = String(effectiveKind || "").toLowerCase();
+    const roomIdNum = Number(rid);
+
+    console.log("[HomeChat][sendTyping] called", { backend, rid, isTyping });
+
+    if (!Number.isFinite(roomIdNum) || roomIdNum <= 0) {
+      console.log("[HomeChat][sendTyping] drop: bad roomId", { rid });
+      return false;
     }
-  }, [effectiveKind, currentUserId, onlineIdSet]);
 
-  useEffect(() => {
-    if (!DEBUG_CHAT) return;
-
-    const sample = dmListWithPresence.slice(0, 3).map((x) => ({
-      roomId: x.roomId ?? x.id ?? null,
-      partnerId: x.partnerId ?? x?.partner?.id ?? x?.user_id ?? null,
-      is_online: Boolean(x.is_online),
-    }));
-
-    const payload = { dmCount: dmListWithPresence.length, sample };
-    const sig = stableJson(payload);
-
-    if (sig !== prevRef.current.dm) {
-      prevRef.current.dm = sig;
-      console.log('[HomeChat] dm list', payload);
+    // ✅ Node / Nest => socket emit
+    if (backend === "node" || backend === "nest") {
+      const ok = emitTypingIndicator({ roomId: roomIdNum, isTyping: Boolean(isTyping) });
+      console.log("[HomeChat][sendTyping] node emitTypingIndicator =>", { ok, roomId: roomIdNum });
+      return ok;
     }
-  }, [dmListWithPresence]);
 
-  useEffect(() => {
-    if (!DEBUG_CHAT) return;
+    // ✅ Reverb/Laravel => HTTP POST (+ X-Socket-Id so sender won't receive it)
+    if (backend === "reverb") {
+      const echo = getOrCreateEcho?.(bareToken);
+      const socketId = echo?.connector?.pusher?.connection?.socket_id ?? null;
 
-    const payload = {
-      isLoading: Boolean(usersQ?.isLoading),
-      isFetching: Boolean(usersQ?.isFetching),
-      hasError: Boolean(usersQ?.error),
-      filteredUsersCount: safeLen(filteredUsers),
-    };
-    const sig = stableJson(payload);
+      console.log("[HomeChat][sendTyping] reverb socketId =>", socketId);
 
-    if (sig !== prevRef.current.usersQ) {
-      prevRef.current.usersQ = sig;
-      console.log('[HomeChat] usersQ', payload);
+      apiClient
+        .post(
+          "/chat/typing",
+          { room_id: roomIdNum, isTyping: Boolean(isTyping) },
+          { headers: socketId ? { "X-Socket-Id": socketId } : {} }
+        )
+        .then((res) => console.log("[HomeChat][sendTyping] reverb ok", res?.data))
+        .catch((e) => console.error("[HomeChat][sendTyping] reverb FAIL", e?.message));
+
+      return true; // fire-and-forget
     }
-  }, [usersQ?.isLoading, usersQ?.isFetching, usersQ?.error, filteredUsers]);
+
+    console.log("[HomeChat][sendTyping] drop: unsupported backend", { backend });
+    return false;
+  },
+  [effectiveKind, bareToken]
+);
 
   return (
     <Container fluid className="messages-container">
+      <Link to="/choose-backend" style={{ textDecoration: "underline" }}>
+  Change backend
+</Link>
       <div className="d-flex justify-content-between align-items-center mb-3">
         <h5 className="mb-0">Chat</h5>
         <LogoutButton />
@@ -267,8 +381,11 @@ export default function HomeChat() {
               typingIndicators={typingIndicators}
               currentUser={currentUser}
               onRespondFriendRequest={handleRespondFriendRequest}
-              // ✅ NEW: ring source of truth
               onlineUsers={onlineUsers}
+              effectiveKind={effectiveKind}
+              loading={loading}
+              error={error}
+              onRetry={onRetryAll}
             />
           </Gate>
         </Col>
@@ -278,10 +395,14 @@ export default function HomeChat() {
             <ChatWindow
               key={roomId}
               roomId={roomId}
-              endpoints={endpoints}
               effectiveKind={effectiveKind}
               accessToken={bareToken}
-              currentUserId={currentUserId}
+              transportStatus={
+                isNode ? (connStateNode === 'connected' ? 'connected' : connStateNode) : connStateReverb
+              }
+              connectionLabel={isNode ? `Socket.IO: ${connStateNode}` : `Reverb: ${connStateReverb}`}
+              sendTyping={sendTyping}
+              registerIncoming={registerIncoming}
             />
           ) : (
             <EmptyRoom />

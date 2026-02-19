@@ -1,48 +1,57 @@
-import React, { useMemo } from 'react';
-import { useSelector } from 'react-redux';
+import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import { useSelector } from "react-redux";
 
-// hooks شما
-import useUserEvents from '@/features/chat/hooks/useUserEvents';
-import { useGlobalNotify } from '@/features/chat/hooks/useGlobalNotify';
+import useUserEvents from "@/features/chat/hooks/useUserEvents";
+import { useGlobalNotify } from "@/features/chat/hooks/useGlobalNotify";
+import { selectBootstrapped, selectToken } from "@/app/store/authSlice";
 
-// selectors
-import { selectBootstrapped, selectToken } from '@/app/store/authSlice';
+const RealtimeCtx = createContext(null);
+export const useRealtimeBus = () => useContext(RealtimeCtx);
 
-export default function ChatRealtimeProvider({ children }) {
+export default function ChatRealtimeProvider({ effectiveKind, children }) {
   const bootstrapped = useSelector(selectBootstrapped);
-
-  // تو پروژه‌ات token تو authSlice هست
   const token = useSelector(selectToken);
 
-  // currentUserId از state (با توجه به ساختار شما)
   const currentUserId = useSelector(
-    (s) =>
-      s.auth?.user?.id ??
-      s.auth?.user?.user_id ??
-      s.auth?.currentUser?.id ??
-      s.auth?.currentUser?.user_id ??
-      null
+    (s) => s.auth?.user?.id ?? s.auth?.currentUser?.id ?? null
   );
 
-  // selectedRoomId برای اینکه وقتی همون روم بازه toast نخوره
   const selectedRoomId = useSelector(
     (s) => s.messages?.selectedRoom?.id ?? s.messages?.selectedRoom ?? null
   );
 
-  const effectiveKind = useMemo(() => 'reverb', []);
-
   const shouldEnable = Boolean(bootstrapped && token && currentUserId);
 
-  const handleGlobalNotify = useGlobalNotify({ selectedRoom: selectedRoomId });
+  const globalNotify = useGlobalNotify({ selectedRoom: selectedRoomId });
 
-  // ✅ فقط وقتی shouldEnable true باشه روشن میشه
+  // ✅ HomeChat will register here
+  const handlerRef = useRef(null);
+  const registerHandler = useCallback((fn) => {
+    handlerRef.current = fn;
+    return () => {
+      if (handlerRef.current === fn) handlerRef.current = null;
+    };
+  }, []);
+
+  const onNotify = useCallback(
+    (payload, meta) => {
+      // 1) route to HomeChat (messages/typing)
+      handlerRef.current?.(payload, meta);
+      // 2) also do global toast/badge logic
+      globalNotify?.(payload, meta);
+    },
+    [globalNotify]
+  );
+
   useUserEvents({
     effectiveKind,
     accessToken: shouldEnable ? token : null,
     currentUserId: shouldEnable ? currentUserId : null,
     selectedRoomId,
-    onNotify: handleGlobalNotify,
+    onNotify,
   });
 
-  return children;
+  const value = useMemo(() => ({ registerHandler }), [registerHandler]);
+
+  return <RealtimeCtx.Provider value={value}>{children}</RealtimeCtx.Provider>;
 }

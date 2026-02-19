@@ -1,4 +1,4 @@
-// src/components/ProtectedRoute.jsx
+// chatApp-frontend\src\shared\components\ProtectedRoute.jsx
 import React from 'react';
 import { useSelector } from 'react-redux';
 import { Navigate, Outlet } from 'react-router-dom';
@@ -23,10 +23,7 @@ export default function ProtectedRoute() {
   const bootstrapped = useSelector(selectBootstrapped);
   const isLoggedIn = useSelector(selectIsLoggedIn);
 
-  // ✅ تا وقتی meThunk نتیجه نداده، redirect نکن
   if (!bootstrapped) return <FullscreenSplash />;
-
   if (!isLoggedIn) return <Navigate to="/login" replace />;
   return <Outlet />;
 }
-

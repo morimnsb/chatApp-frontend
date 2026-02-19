@@ -1,4 +1,4 @@
-// src/components/BackendPicker.jsx
+// chatApp-frontend\src\shared\components\BackendPicker.jsx
 import React from 'react';
 import { BACKENDS, BACKEND_REGISTRY } from '@/shared/backend';
 
