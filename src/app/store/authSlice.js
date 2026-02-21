@@ -7,7 +7,7 @@ import { hardResetSocket } from '@/shared/ws/socketClient';
 
 const STORAGE_KEYS = {
   access: 'access_token',
-  refresh: 'refresh_token', // (اختیاری) اگر بعداً خواستی refresh رو localStorage نگه داری
+  refresh: 'refresh_token',
   expiresAt: 'expires_at',
 };
 
@@ -35,7 +35,6 @@ function saveAuthToStorage({ access_token, refreshToken, expiresAt }) {
     if (access_token) localStorage.setItem(STORAGE_KEYS.access, stripBearer(access_token));
     else localStorage.removeItem(STORAGE_KEYS.access);
 
-    // ✅ اگر refresh رو cookie نگه می‌داری، می‌تونی کلاً این رو خاموش کنی
     if (refreshToken) localStorage.setItem(STORAGE_KEYS.refresh, stripBearer(refreshToken));
     else localStorage.removeItem(STORAGE_KEYS.refresh);
 
@@ -48,11 +47,24 @@ function clearAuthStorage() {
   saveAuthToStorage({ access_token: null, refreshToken: null, expiresAt: null });
 }
 
+// ✅ unwrap user from any backend shape
+export function extractUser(data) {
+  if (!data || typeof data !== 'object') return null;
+
+  const u = data.user ?? data.me ?? data.currentUser ?? data.profile ?? null;
+
+  if (u && typeof u === 'object' && u.id != null) return u;
+  if (u && typeof u === 'object' && u.user && u.user.id != null) return u.user;
+
+  if (data.id != null && (data.email || data.name)) return data;
+
+  return null;
+}
+
 function parseAuthResponse(data) {
   if (!data || typeof data !== 'object') return {};
 
   const access_token = data.access_token || data.access || data.token || data.idToken || null;
-
   const refreshToken = data.refresh_token || data.refreshToken || data.refresh || null;
 
   let expiresAt = null;
@@ -72,7 +84,7 @@ function parseAuthResponse(data) {
     access_token: access_token ? stripBearer(access_token) : null,
     refreshToken: refreshToken ? stripBearer(refreshToken) : null,
     expiresAt: expiresAt || null,
-    user: data.user || data.me || null,
+    user: extractUser(data), // may be null
   };
 }
 
@@ -85,7 +97,7 @@ export const loginThunk = createAsyncThunk(
       const res = await apiClient.post('/auth/login', credentials);
       const parsed = parseAuthResponse(res.data);
       if (!parsed.access_token) throw new Error('No access_token returned');
-      return parsed;
+      return parsed; // user may be null; later /me will fill
     } catch (err) {
       return rejectWithValue(
         err.response?.data?.message ||
@@ -102,7 +114,9 @@ export const meThunk = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try {
       const res = await apiClient.get('/auth/me');
-      return res.data;
+      const user = extractUser(res.data);
+      if (!user) throw new Error('Invalid /me payload');
+      return user; // ✅ always user object
     } catch (err) {
       return rejectWithValue(
         err.response?.data?.message ||
@@ -118,7 +132,6 @@ export const refreshThunk = createAsyncThunk(
   'auth/refresh',
   async (_, { rejectWithValue }) => {
     try {
-      // ✅ Node backend refresh از cookie می‌خونه → body لازم نیست
       const res = await apiClient.post('/auth/refresh', {});
       const parsed = parseAuthResponse(res.data);
       if (!parsed.access_token) throw new Error('No access_token returned');
@@ -133,7 +146,6 @@ export const logoutThunk = createAsyncThunk(
   'auth/logout',
   async (_, { rejectWithValue }) => {
     try {
-      // ✅ logout هم refresh را از cookie می‌خواند
       await apiClient.post('/auth/logout', {});
       hardResetSocket('logout');
       return true;
@@ -153,31 +165,27 @@ export const logoutThunk = createAsyncThunk(
 const stored = loadAuthFromStorage();
 
 const initialState = {
-  currentUser: null,
+  currentUser: null, // ✅ always user object: {id,name,email}
   access_token: stored.access_token,
   refreshToken: stored.refreshToken,
   expiresAt: stored.expiresAt,
   status: 'idle',
   error: null,
-  bootstrapped: false, // ✅ مهم برای ProtectedRoute
+  bootstrapped: false, // ✅ only BootstrapAuth controls this
 };
 
 const authSlice = createSlice({
   name: 'auth',
   initialState,
   reducers: {
-    // ✅ برای verify-email یا هر جایی که access_token داری
+    // ✅ for verify-email or any manual hydrate
     hydrateAuth(state, action) {
       const payload = action.payload || {};
 
-      const access =
-        payload.access_token ?? payload.access ?? payload.token ?? null;
+      const access = payload.access_token ?? payload.access ?? payload.token ?? null;
+      const refresh = payload.refreshToken ?? payload.refresh_token ?? payload.refresh ?? null;
 
-      const refresh =
-        payload.refreshToken ?? payload.refresh_token ?? payload.refresh ?? null;
-
-      const user =
-        payload.user ?? payload.me ?? payload.currentUser ?? null;
+      const user = extractUser(payload);
 
       if (access) state.access_token = stripBearer(access);
       if (refresh) state.refreshToken = stripBearer(refresh);
@@ -194,9 +202,10 @@ const authSlice = createSlice({
 
       if (user) state.currentUser = user;
 
-      // ✅ بعد از verify/login دستی، ProtectedRoute گیر نکنه
-      state.bootstrapped = true;
       state.error = null;
+
+      // ✅ IMPORTANT: do NOT force bootstrapped here
+      // Bootstrapping is handled centrally in BootstrapAuth
 
       saveAuthToStorage({
         access_token: state.access_token,
@@ -212,7 +221,7 @@ const authSlice = createSlice({
       state.expiresAt = null;
       state.status = 'idle';
       state.error = null;
-      state.bootstrapped = true;
+      state.bootstrapped = true; // UI can continue
       clearAuthStorage();
     },
 
@@ -227,11 +236,11 @@ const authSlice = createSlice({
 
   extraReducers: (builder) => {
     const applyAuth = (state, payload) => {
-      if (payload.access_token) state.access_token = payload.access_token;
-      if (payload.refreshToken) state.refreshToken = payload.refreshToken;
-      if (payload.expiresAt) state.expiresAt = payload.expiresAt;
+      if (payload?.access_token) state.access_token = payload.access_token;
+      if (payload?.refreshToken) state.refreshToken = payload.refreshToken;
+      if (payload?.expiresAt) state.expiresAt = payload.expiresAt;
 
-      if (payload.user) state.currentUser = payload.user;
+      if (payload?.user) state.currentUser = payload.user;
 
       saveAuthToStorage({
         access_token: state.access_token,
@@ -242,20 +251,22 @@ const authSlice = createSlice({
 
     builder.addCase(loginThunk.fulfilled, (state, action) => {
       applyAuth(state, action.payload);
+      // ✅ do NOT set bootstrapped here
     });
 
     builder
       .addCase(meThunk.fulfilled, (state, action) => {
         state.currentUser = action.payload || null;
-        state.bootstrapped = true;
+        // ✅ do NOT set bootstrapped here
       })
       .addCase(meThunk.rejected, (state) => {
         state.currentUser = null;
-        state.bootstrapped = true;
+        // ✅ do NOT set bootstrapped here
       });
 
     builder.addCase(refreshThunk.fulfilled, (state, action) => {
       applyAuth(state, action.payload);
+      // ✅ do NOT set bootstrapped here
     });
 
     builder.addCase(logoutThunk.fulfilled, (state) => {
@@ -295,13 +306,14 @@ const authSlice = createSlice({
 });
 
 export const { localLogout, clearError, markBootstrapped, hydrateAuth } = authSlice.actions;
-
 export default authSlice.reducer;
 
 /* -------------------- SELECTORS -------------------- */
 
 export const selectAuth = (state) => state.auth;
 export const selectCurrentUser = (state) => state.auth.currentUser;
+export const selectCurrentUserId = (state) => state.auth.currentUser?.id ?? null;
+
 export const selectBootstrapped = (state) => state.auth.bootstrapped;
 
 export const selectAccessToken = (state) => state.auth.access_token;
@@ -312,15 +324,20 @@ export const selectAuthStatus = (state) => state.auth.status;
 export const selectAuthError = (state) => state.auth.error;
 
 export const selectIsLoggedIn = (state) =>
-  Boolean(state.auth.access_token && state.auth.currentUser);
-
+  Boolean(state.auth.access_token && state.auth.currentUser?.id);
 export const selectIsTokenExpired = (state) => {
-  const { access_token, expiresAt } = state.auth;
-  if (!access_token) return true;
-  if (!expiresAt) return false;
-  return Date.now() >= expiresAt;
-};
+  const access_token = state.auth?.access_token;
+  const expiresAt = state.auth?.expiresAt;
 
+  // اگر توکن نداریم -> مثل expired رفتار کن
+  if (!access_token) return true;
+
+  // اگر expiresAt نداریم -> به‌صورت optimistic فرض کن expired نیست
+  // (چون بعضی بک‌اندها expires نمی‌فرستن)
+  if (!expiresAt) return false;
+
+  return Date.now() >= Number(expiresAt);
+};
 // backward compatibility
 export const selectToken = (state) => state.auth.access_token;
 export const selectBareToken = (state) =>

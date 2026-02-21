@@ -1,6 +1,7 @@
 // chatApp-frontend/src/hooks/chat/useChatLists.js
 import { useEffect, useMemo } from 'react';
 import { useSelector } from 'react-redux';
+import { selectCurrentUserId } from '@/app/store/authSlice';
 
 const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
@@ -41,7 +42,6 @@ function normalizeKind(r) {
   if (k === 'dm' || k === 'direct' || k === 'private') return 'dm';
   if (k === 'group' || k === 'grp' || k === 'public') return 'group';
 
-  // fallback from booleans
   if (r?.isGroup === true || r?.is_group === true) return 'group';
   if (r?.isGroup === false || r?.is_group === false) return 'dm';
 
@@ -51,10 +51,28 @@ function normalizeKind(r) {
   return null;
 }
 
+// ✅ always return [{id,name,email}] user objects
 function normalizeUsers(r) {
-  if (Array.isArray(r?.members)) return r.members;       // ✅ standard backend
-  if (Array.isArray(r?.users)) return r.users;           // ✅ old shapes
-  if (Array.isArray(r?.participants)) return r.participants;
+  // 1) members: [{user:{...}}]
+  if (Array.isArray(r?.members)) {
+    return r.members
+      .map((m) => m?.user ?? m)
+      .filter((u) => u && u.id != null);
+  }
+
+  // 2) users: [{id,...}] (Laravel conversations)
+  if (Array.isArray(r?.users)) {
+    return r.users
+      .map((u) => u?.user ?? u)
+      .filter((u) => u && u.id != null);
+  }
+
+  if (Array.isArray(r?.participants)) {
+    return r.participants
+      .map((u) => u?.user ?? u)
+      .filter((u) => u && u.id != null);
+  }
+
   return [];
 }
 
@@ -76,13 +94,17 @@ function normalizeLastText(r) {
   );
 }
 
-export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
+export function useChatLists({ searchQuery = '', currentUserId: currentUserIdProp = null } = {}) {
   const q = String(searchQuery || '').trim().toLowerCase();
 
   const roomsMap = useSelector((s) => s?.messages?.groupMessages);
   const typingIndicators = useSelector((s) => s?.messages?.typingIndicators) || {};
   const loading = useSelector((s) => Boolean(s?.messages?.loadingStates?.messages));
   const error = useSelector((s) => s?.messages?.errorStates?.messages) || null;
+
+  // ✅ source of truth from redux (can be overridden by prop if provided)
+  const currentUserIdRedux = useSelector(selectCurrentUserId);
+  const currentUserId = currentUserIdProp ?? currentUserIdRedux ?? null;
 
   const roomsAll = useMemo(() => {
     const arr = toRoomArray(roomsMap);
@@ -97,11 +119,10 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
           ...r,
           id,
           kind,
-          is_private: kind === 'dm', // ✅ source of truth
-          users,                    // ✅ always present now
+          is_private: kind === 'dm',
+          users,
           last_message: r?.last_message ?? r?.lastMessage ?? r?.last_message_obj ?? null,
           last_message_at: r?.last_message_at ?? getLastAt(r),
-          // ✅ normalize name/title for UI + search
           name:
             r?.name ??
             r?.title ??
@@ -114,7 +135,6 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
       .filter((r) => r?.id != null);
 
     normalized.sort((a, b) => safeTime(getLastAt(b)) - safeTime(getLastAt(a)));
-
     return normalized;
   }, [roomsMap]);
 
@@ -126,10 +146,8 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
       : all.filter((r) => {
           const name = String(r?.name || '').toLowerCase();
           const desc = String(r?.description || '').toLowerCase();
-
           const lastText = String(normalizeLastText(r) || '').toLowerCase();
 
-          // ✅ DM search: include partner names too
           const partnerNames = safeArr(r?.users)
             .map((u) => String(u?.name || u?.email || '').toLowerCase())
             .join(' ');
@@ -142,7 +160,6 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
           );
         });
 
-    // ✅ split by kind (standard)
     const groups = filtered.filter((r) => r?.kind === 'group');
 
     const dms = filtered
@@ -198,10 +215,11 @@ export function useChatLists({ searchQuery = '', currentUserId = null } = {}) {
       dmCount: dmList.length,
       groupCount: groupList.length,
       currentUserId,
+      currentUserIdRedux,
       dmSample: dmList.slice(0, 2).map((x) => ({ roomId: x.roomId, partnerId: x.partnerId })),
       groupSample: groupList.slice(0, 2).map((x) => ({ id: x.id, name: x.name, kind: x.kind })),
     });
-  }, [roomsAll, dmList, groupList, currentUserId]);
+  }, [roomsAll, dmList, groupList, currentUserId, currentUserIdRedux]);
 
   return { dmList, groupList, typingIndicators, loading, error };
 }

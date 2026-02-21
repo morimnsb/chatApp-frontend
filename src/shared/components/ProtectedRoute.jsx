@@ -1,29 +1,33 @@
-// chatApp-frontend\src\shared\components\ProtectedRoute.jsx
-import React from 'react';
-import { useSelector } from 'react-redux';
-import { Navigate, Outlet } from 'react-router-dom';
-import { selectIsLoggedIn, selectBootstrapped } from '@/app/store/authSlice';
+// src/shared/components/ProtectedRoute.jsx
+import React from "react";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { useSelector } from "react-redux";
+import { selectBootstrapped, selectIsLoggedIn } from "@/app/store/authSlice";
 
-function FullscreenSplash() {
-  return (
-    <div
-      style={{
-        minHeight: '100dvh',
-        display: 'grid',
-        placeItems: 'center',
-        fontFamily: 'system-ui',
-      }}
-    >
-      Loading…
-    </div>
-  );
-}
-
-export default function ProtectedRoute() {
+function ProtectedRoute() {
   const bootstrapped = useSelector(selectBootstrapped);
   const isLoggedIn = useSelector(selectIsLoggedIn);
+  const loc = useLocation();
 
-  if (!bootstrapped) return <FullscreenSplash />;
-  if (!isLoggedIn) return <Navigate to="/login" replace />;
+  if (!bootstrapped) {
+    return (
+      <div
+        style={{
+          minHeight: "100dvh",
+          display: "grid",
+          placeItems: "center",
+        }}
+      >
+        Loading…
+      </div>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  }
+
   return <Outlet />;
 }
+
+export default ProtectedRoute; // ✅ این خط مهمه

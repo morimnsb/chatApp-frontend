@@ -1,9 +1,11 @@
-// chatApp-frontend\src\features\auth\components\RegisterForm.jsx
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Form, Button, Container, Row, Col } from 'react-bootstrap';
 import { useNavigate, Link } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { registerApi } from '@/shared/services/authService';
+
+const normalize = (s) => String(s || '').trim();
+const normalizeSpace = (s) => normalize(s).replace(/\s+/g, ' ');
 
 const RegisterForm = () => {
   const navigate = useNavigate();
@@ -19,6 +21,13 @@ const RegisterForm = () => {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  const { first_name, last_name, email, password, password2 } = formData;
+
+  // ✅ Standard full name for ALL backends
+  const fullName = useMemo(() => {
+    return normalizeSpace(`${first_name} ${last_name}`);
+  }, [first_name, last_name]);
+
   const handleChange = (e) => {
     setFormData((prev) => ({
       ...prev,
@@ -27,11 +36,10 @@ const RegisterForm = () => {
     setError('');
   };
 
-  const { first_name, last_name, email, password, password2 } = formData;
-
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    // ✅ UI validation (local)
     if (!first_name || !last_name || !email || !password || !password2) {
       setError('همه فیلدها الزامی هستند.');
       return;
@@ -40,30 +48,35 @@ const RegisterForm = () => {
       setError('رمز عبور و تکرار آن یکسان نیستند.');
       return;
     }
+    if (normalize(email) === '') {
+      setError('ایمیل معتبر نیست.');
+      return;
+    }
+    if (fullName.length < 2) {
+      setError('نام و نام خانوادگی معتبر نیست.');
+      return;
+    }
 
     try {
       setSubmitting(true);
       setError('');
 
-      console.debug('[REGISTER REQUEST PAYLOAD]', {
-        first_name,
-        last_name,
-        email,
-      });
-
-      const data = await registerApi({
-        first_name,
-        last_name,
-        email,
+      // ✅ STANDARD payload for all backends
+      const payload = {
+        name: fullName,
+        email: normalize(email),
         password,
-        password2,
-      });
+      };
+
+      console.debug('[REGISTER REQUEST PAYLOAD][STANDARD]', payload);
+
+      const data = await registerApi(payload);
 
       console.debug('[REGISTER RESPONSE DATA]', data);
 
-   
-      sessionStorage.setItem('pending_email', email.trim());
-      if (data.otp) sessionStorage.setItem('pending_otp', data.otp);
+      // ✅ Keep verify-email flow
+      sessionStorage.setItem('pending_email', normalize(email));
+      if (data?.otp) sessionStorage.setItem('pending_otp', String(data.otp));
 
       toast.success('ثبت‌نام موفق! لطفاً ایمیل خود را با کد OTP تأیید کنید.');
       navigate('/verify-email');
@@ -87,9 +100,11 @@ const RegisterForm = () => {
         message = data.message;
       } else if (typeof data === 'string') {
         message = data;
+      } else if (resp?.status === 409) {
+        message = 'این ایمیل قبلاً ثبت شده است.';
       } else if (resp?.status === 422) {
         message = 'اعتبارسنجی ناموفق بود. لطفاً فیلدها را بررسی کنید.';
-      } else if (err.message === 'NO_XSRF_TOKEN') {
+      } else if (err?.message === 'NO_XSRF_TOKEN') {
         message = 'مشکل در CSRF. لطفاً صفحه را رفرش کرده و دوباره امتحان کنید.';
       }
 
@@ -111,9 +126,7 @@ const RegisterForm = () => {
 
           <Form onSubmit={handleSubmit} noValidate>
             <Form.Group controlId="formFirstName" className="mb-3">
-              <Form.Label className="registerForm-required-label">
-                نام:
-              </Form.Label>
+              <Form.Label className="registerForm-required-label">نام:</Form.Label>
               <Form.Control
                 className="registerForm-required-control"
                 type="text"
@@ -127,9 +140,7 @@ const RegisterForm = () => {
             </Form.Group>
 
             <Form.Group controlId="formLastName" className="mb-3">
-              <Form.Label className="registerForm-required-label">
-                نام خانوادگی:
-              </Form.Label>
+              <Form.Label className="registerForm-required-label">نام خانوادگی:</Form.Label>
               <Form.Control
                 className="registerForm-required-control"
                 type="text"
@@ -143,9 +154,7 @@ const RegisterForm = () => {
             </Form.Group>
 
             <Form.Group controlId="formEmail" className="mb-3">
-              <Form.Label className="registerForm-required-label">
-                ایمیل:
-              </Form.Label>
+              <Form.Label className="registerForm-required-label">ایمیل:</Form.Label>
               <Form.Control
                 className="registerForm-required-control"
                 type="email"
@@ -159,9 +168,7 @@ const RegisterForm = () => {
             </Form.Group>
 
             <Form.Group controlId="formPassword" className="mb-3">
-              <Form.Label className="registerForm-required-label">
-                رمز عبور:
-              </Form.Label>
+              <Form.Label className="registerForm-required-label">رمز عبور:</Form.Label>
               <Form.Control
                 className="registerForm-required-control"
                 type="password"
@@ -176,9 +183,7 @@ const RegisterForm = () => {
             </Form.Group>
 
             <Form.Group controlId="formRepeatPassword" className="mb-3">
-              <Form.Label className="registerForm-required-label">
-                تکرار رمز عبور:
-              </Form.Label>
+              <Form.Label className="registerForm-required-label">تکرار رمز عبور:</Form.Label>
               <Form.Control
                 className="registerForm-required-control"
                 type="password"
@@ -238,4 +243,3 @@ const RegisterForm = () => {
 };
 
 export default RegisterForm;
-

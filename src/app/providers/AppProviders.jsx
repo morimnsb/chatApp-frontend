@@ -7,43 +7,44 @@ import 'react-toastify/dist/ReactToastify.css';
 import { store } from '@/app/store/store';
 import {
   meThunk,
-  selectToken,
+  selectAccessToken,
   selectBootstrapped,
-  markBootstrapped, // ✅ FIX: این import لازم بود
+  markBootstrapped,
 } from '@/app/store/authSlice';
 
-// ✅ فقط auth bootstrap. هیچ ProtectedRoute اینجا نباشد.
+const DEV = import.meta.env.DEV === true;
+const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || '') === 'true';
+const log = (...a) => DEBUG && console.log('[BootstrapAuth]', ...a);
+
 function BootstrapAuth({ children }) {
   const dispatch = useDispatch();
-  const token = useSelector(selectToken);
+  const accessToken = useSelector(selectAccessToken);
   const bootstrapped = useSelector(selectBootstrapped);
 
-  // ✅ جلوگیری از دوبار اجرا در React StrictMode (dev)
   const didRunRef = useRef(false);
 
   useEffect(() => {
-    if (didRunRef.current) return;
     if (bootstrapped) return;
-
+    if (didRunRef.current) return;
     didRunRef.current = true;
 
-    const finish = () => {
+    (async () => {
       try {
+        if (!accessToken) {
+          log('no token -> skip me');
+          return;
+        }
+        log('token -> meThunk');
+        await dispatch(meThunk()).unwrap();
+        log('meThunk ok');
+      } catch (e) {
+        log('meThunk failed (ignore), still bootstrapping', e?.message || e);
+      } finally {
         dispatch(markBootstrapped());
-      } catch {
-        // اگر اکشن تعریف نشده بود، حداقل اپ کرش نکند
+        log('bootstrapped ✅');
       }
-    };
-
-    if (token) {
-      // ✅ حتی اگر meThunk fail شد، باید bootstrapped بشیم
-      Promise.resolve(dispatch(meThunk()))
-        .catch(() => {})
-        .finally(finish);
-    } else {
-      finish();
-    }
-  }, [bootstrapped, token, dispatch]);
+    })();
+  }, [dispatch, accessToken, bootstrapped]);
 
   return <>{children}</>;
 }

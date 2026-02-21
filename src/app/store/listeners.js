@@ -1,5 +1,5 @@
 // src/store/listeners.js
-import { createListenerMiddleware } from '@reduxjs/toolkit';
+import { createListenerMiddleware } from "@reduxjs/toolkit";
 
 import {
   loginThunk,
@@ -7,99 +7,73 @@ import {
   refreshThunk,
   localLogout,
   selectIsTokenExpired,
-  selectRefreshToken,
-} from '@/app/store/authSlice';
+} from "@/app/store/authSlice";
 
-import { apiSlice } from '@/shared/api/apiSlice';
-import { wsConnected, wsDisconnected } from '@/app/store/wsActions';
+import { apiSlice } from "@/shared/api/apiSlice";
+import { wsConnected, wsDisconnected } from "@/app/store/wsActions";
 
 const listenerMiddleware = createListenerMiddleware();
 
-/**
- * 1) مدیریت WebSocket بر اساس وضعیت احراز هویت
- * --------------------------------------------------
- */
-
-// وقتی login موفق شد → WS را وصل کن
+/* 1) WS connect/disconnect based on auth */
 listenerMiddleware.startListening({
   actionCreator: loginThunk.fulfilled,
-  effect: async (action, listenerApi) => {
-    listenerApi.dispatch(wsConnected());
+  effect: async (_, api) => {
+    api.dispatch(wsConnected());
   },
 });
 
-// وقتی logoutThunk موفق شد → WS را قطع کن
 listenerMiddleware.startListening({
   actionCreator: logoutThunk.fulfilled,
-  effect: async (action, listenerApi) => {
-    listenerApi.dispatch(wsDisconnected());
+  effect: async (_, api) => {
+    api.dispatch(wsDisconnected());
   },
 });
 
-// اگر login رد شد (مثلاً پسورد اشتباه) → مطمئن شو WS قطع است
 listenerMiddleware.startListening({
   actionCreator: loginThunk.rejected,
-  effect: async (action, listenerApi) => {
-    listenerApi.dispatch(wsDisconnected());
+  effect: async (_, api) => {
+    api.dispatch(wsDisconnected());
   },
 });
 
-/**
- * 2) Auto-refresh توکن قبل از callهای مهم RTK Query
- * --------------------------------------------------
- *
- * این‌بار به‌جای matcher از predicate استفاده می‌کنیم تا کاملاً کنترل دست خودمان باشد.
- */
-
+/* 2) Auto refresh before protected RTK Query endpoints */
 const protectedEndpoints = new Set([
-  'getMe',
-  'getUsers',
-  'getRooms', // اگر در apiSlice اسمش getConversations است، اینجا را همسان کن
-  'getRoomMessages',
-  'sendMessage',
+  "getMe",
+  "getUsers",
+  "getRooms",
+  "getRoomMessages",
+  "sendMessage",
 ]);
 
 listenerMiddleware.startListening({
-  // predicate خودش یک تابع ساده است: (action, currentState, prevState) => boolean
-  predicate: (action, currentState, previousState) => {
-    // فقط actionهای RTK Query برای apiSlice
-    // معمولا نوعش چیزی مثل 'api/executeQuery/pending' یا شبیه اینه
-    if (
-      action.type !== `${apiSlice.reducerPath}/executeQuery/pending` &&
-      action.type !== `${apiSlice.reducerPath}/executeMutation/pending`
-    ) {
-      return false;
-    }
+  predicate: (action) => {
+    const isQuery =
+      action.type === `${apiSlice.reducerPath}/executeQuery/pending` ||
+      action.type === `${apiSlice.reducerPath}/executeMutation/pending`;
+
+    if (!isQuery) return false;
 
     const endpointName = action.meta?.arg?.endpointName;
-    if (!endpointName) return false;
-
-    // فقط endpointهای محافظت‌شده که نیاز به توکن دارند
-    return protectedEndpoints.has(endpointName);
+    return endpointName ? protectedEndpoints.has(endpointName) : false;
   },
 
-  effect: async (action, listenerApi) => {
-    const state = listenerApi.getState();
+  effect: async (_, api) => {
+    const state = api.getState();
 
+    const refreshToken = state.auth?.refreshToken || null;
     const isExpired = selectIsTokenExpired(state);
-    // selectRefreshToken رو از import بردار
-const refreshToken = state.auth?.refreshToken || null;
 
-
-    // اگر refreshToken نداریم یا هنوز منقضی نشده، کاری نکن
     if (!refreshToken || !isExpired) return;
 
-    // تلاش برای رفرش
-    const res = await listenerApi.dispatch(refreshThunk());
+    const res = await api.dispatch(refreshThunk());
 
-    // اگر رفرش هم شکست خورد → لاگ‌اوت کامل + قطع WS
     if (refreshThunk.rejected.match(res)) {
-      listenerApi.dispatch(localLogout());
-      listenerApi.dispatch(wsDisconnected());
+      api.dispatch(localLogout());
+      api.dispatch(wsDisconnected());
+      // ✅ RTK Query cache reset (optional but recommended)
+      api.dispatch(apiSlice.util.resetApiState());
     }
   },
 });
 
 export default listenerMiddleware;
-
-

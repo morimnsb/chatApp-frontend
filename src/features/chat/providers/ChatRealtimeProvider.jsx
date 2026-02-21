@@ -1,26 +1,34 @@
+// chatApp-frontend/src/features/chat/providers/ChatRealtimeProvider.jsx
 import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import { useSelector } from "react-redux";
 
 import useUserEvents from "@/features/chat/hooks/useUserEvents";
 import { useGlobalNotify } from "@/features/chat/hooks/useGlobalNotify";
-import { selectBootstrapped, selectToken } from "@/app/store/authSlice";
+import { selectBootstrapped, selectToken, selectCurrentUserId } from "@/app/store/authSlice";
 
 const RealtimeCtx = createContext(null);
 export const useRealtimeBus = () => useContext(RealtimeCtx);
 
 export default function ChatRealtimeProvider({ effectiveKind, children }) {
   const bootstrapped = useSelector(selectBootstrapped);
+
+  // ✅ standard token (access_token)
   const token = useSelector(selectToken);
 
-  const currentUserId = useSelector(
-    (s) => s.auth?.user?.id ?? s.auth?.currentUser?.id ?? null
-  );
+  // ✅ standard user id (ONLY from currentUser)
+  const currentUserId = useSelector(selectCurrentUserId);
 
   const selectedRoomId = useSelector(
     (s) => s.messages?.selectedRoom?.id ?? s.messages?.selectedRoom ?? null
   );
 
-  const shouldEnable = Boolean(bootstrapped && token && currentUserId);
+  // ✅ enable only when we are really ready
+  const shouldEnable = Boolean(
+    bootstrapped &&
+      token &&
+      currentUserId &&
+      String(effectiveKind || "").trim().length > 0
+  );
 
   const globalNotify = useGlobalNotify({ selectedRoom: selectedRoomId });
 

@@ -170,16 +170,15 @@ export function getOrCreateEcho(accessToken) {
 
   authEndpoint: cfg.authEndpoint,
 
-  // ✅ let Echo do auth once
   auth: {
     headers: {
       Authorization: `Bearer ${token}`,
       "X-Requested-With": "XMLHttpRequest",
+      Accept: "application/json",
     },
   },
 
-  // ✅ if you rely on cookies (refresh/session)
-  withCredentials: true,
+  withCredentials: false,
 });
 
 

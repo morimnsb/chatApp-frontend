@@ -13,6 +13,10 @@ const USER_EVENTS = [
   'direct.message',
   'chat:notify',
   '.chat:notify',
+
+  // ✅ NEW (your backend emits this)
+  'user.notify',
+  '.user.notify',
 ];
 
 const ROOM_EVENTS = [
@@ -20,6 +24,11 @@ const ROOM_EVENTS = [
   'ChatMessageCreated',
   'chat:message',
   '.chat:message',
+
+  // ✅ NEW (your backend emits this)
+  'chat.message',
+  '.chat.message',
+
   'typing_indicator',
   '.typing_indicator',
 ];

@@ -1,4 +1,3 @@
-// chatApp-frontend/src/shared/api/apiClient.js
 import axios from "axios";
 
 /* ------------------------- URL helpers ------------------------- */
@@ -9,7 +8,6 @@ function normalizeUrl(path) {
   const p = String(path || "").trim();
   if (!p) return null;
   if (isAbsoluteUrl(p)) return p;
-
   const cleaned = p.replace(/^\/+/, "").replace(/\s+/g, "");
   return `/${cleaned}`;
 }
@@ -17,9 +15,7 @@ function normalizeUrl(path) {
 function buildFullUrl(config) {
   const base = String(config?.baseURL || "").replace(/\/+$/, "");
   const url = String(config?.url || "");
-
   if (isAbsoluteUrl(url)) return url;
-
   const path = url.replace(/^\/+/, "");
   return base ? `${base}/${path}` : `/${path}`;
 }
@@ -31,7 +27,7 @@ const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || "") === "true";
 /* ------------------------- backend -> env map ------------------------- */
 const BACKEND_ENV_MAP = {
   reverb: "VITE_API_BASE_REVERB",
-  laravel: "VITE_API_BASE_REVERB", // ✅ alias safety (if any old code uses laravel)
+  laravel: "VITE_API_BASE_REVERB", // alias safety
   node: "VITE_API_BASE_NODE",
   nest: "VITE_API_BASE_NEST",
   django: "VITE_API_BASE_DJANGO",
@@ -56,7 +52,6 @@ function envBaseFor(kind) {
 }
 
 function fallbackBase() {
-  // default fallback (still works even without choosing backend)
   return String(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api");
 }
 
@@ -65,8 +60,8 @@ export function resolveApiBase(kind) {
   return String(base).replace(/\/+$/, "");
 }
 
-function shouldUseCredentials(kind) {
-  // ✅ only Laravel/Reverb uses cookies/sanctum/broadcast auth
+function defaultUseCredentials(kind) {
+  // only laravel/reverb might use cookies for broadcast auth, but our auth is JWT
   const k = String(kind || "").toLowerCase();
   return k === "reverb" || k === "laravel";
 }
@@ -75,9 +70,7 @@ function shouldUseCredentials(kind) {
 const apiClient = axios.create({
   baseURL: resolveApiBase(readBackendChoice()),
   headers: { "Content-Type": "application/json" },
-
-  // will be overwritten per-request below, but keep sane default:
-  withCredentials: shouldUseCredentials(readBackendChoice()),
+  withCredentials: defaultUseCredentials(readBackendChoice()),
 });
 
 let _store = null;
@@ -85,12 +78,11 @@ export function attachStore(store) {
   _store = store;
 }
 
-// optional manual setter (still useful)
 export function setApiBase(nextKind) {
   const nextBase = resolveApiBase(nextKind);
   apiClient.defaults.baseURL = nextBase;
 
-  const creds = shouldUseCredentials(nextKind);
+  const creds = defaultUseCredentials(nextKind);
   apiClient.defaults.withCredentials = creds;
 
   if (DEBUG) console.log("[apiClient] baseURL set =>", nextBase, { backend: nextKind, withCredentials: creds });
@@ -123,11 +115,17 @@ function getReduxToken() {
 /* ------------------------- request interceptor ------------------------- */
 apiClient.interceptors.request.use(
   (config) => {
-    // ✅ ALWAYS sync baseURL + credentials with chosen backend
     const chosen = readBackendChoice();
     const nextBase = resolveApiBase(chosen);
-    const creds = shouldUseCredentials(chosen);
 
+    // ✅ per-request controls (standard)
+    // default: hasAuth=true for protected endpoints, but auth endpoints should pass { hasAuth:false }
+    const hasAuth = config?.hasAuth !== false; // default true
+    const creds = typeof config?.withCredentials === "boolean"
+      ? config.withCredentials
+      : defaultUseCredentials(chosen);
+
+    // sync defaults
     if (apiClient.defaults.baseURL !== nextBase) {
       apiClient.defaults.baseURL = nextBase;
       if (DEBUG) console.log("[apiClient] baseURL set =>", nextBase, { backend: chosen });
@@ -137,7 +135,6 @@ apiClient.interceptors.request.use(
       if (DEBUG) console.log("[apiClient] withCredentials =>", creds, { backend: chosen });
     }
 
-    // ensure this request uses correct baseURL/credentials
     config.baseURL = nextBase;
     config.withCredentials = creds;
 
@@ -146,12 +143,18 @@ apiClient.interceptors.request.use(
     if (!config.headers.Accept) config.headers.Accept = "application/json";
     if (!config.headers["Content-Type"]) config.headers["Content-Type"] = "application/json";
 
-    const token = getReduxToken();
-    if (token && !config.headers.Authorization) {
-      config.headers.Authorization = `Bearer ${String(token).replace(/^Bearer\s+/i, "").trim()}`;
+    // ✅ attach token only when hasAuth=true
+    if (hasAuth) {
+      const token = getReduxToken();
+      if (token && !config.headers.Authorization) {
+        config.headers.Authorization = `Bearer ${String(token).replace(/^Bearer\s+/i, "").trim()}`;
+      }
+    } else {
+      // ensure no auth header leaks
+      if (config.headers.Authorization) delete config.headers.Authorization;
     }
 
-    // normalize relative url always
+    // normalize url
     if (config?.url) {
       const nu = normalizeUrl(config.url);
       if (nu) config.url = nu;
@@ -165,15 +168,14 @@ apiClient.interceptors.request.use(
         url: buildFullUrl(config),
         hasAuth: Boolean(config.headers.Authorization),
         withCredentials: Boolean(config.withCredentials),
+        hasAuthFlag: hasAuth,
       });
     }
 
     return config;
   },
   (err) => {
-    if (!isCanceled(err)) {
-      console.log("[apiClient] request error", { message: err?.message, code: err?.code });
-    }
+    if (!isCanceled(err)) console.log("[apiClient] request error", { message: err?.message, code: err?.code });
     return Promise.reject(err);
   }
 );
