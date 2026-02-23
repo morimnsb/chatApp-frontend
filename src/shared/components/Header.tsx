@@ -1,7 +1,9 @@
 // chatApp-frontend\src\shared\components\Header.tsx
-import React, { forwardRef, useImperativeHandle } from "react";
+// chatApp-frontend/src/shared/components/Header.tsx
+import React, { forwardRef, useImperativeHandle, useState } from "react";
 import { InputGroup, FormControl, Button, Dropdown } from "react-bootstrap";
 import Message from "@/assets/images/message/message.png";
+import UserModal from "@/shared/components/UserModal";
 
 export type HeaderHandle = {
   resetSearch: () => void;
@@ -11,20 +13,43 @@ export type HeaderHandle = {
 type Props = {
   searchQuery: string;
   setSearchQuery: (value: string) => void;
-  setShowUserDropdown: (value: boolean | ((prev: boolean) => boolean)) => void;
+
+  usersQ?: any;
+  currentUser?: any;
+  filteredUsers?: any[];
+
+  handleFriendshipRequest: (userId: string | number) => void; // ✅ REQUIRED
 };
 
+// ✅ tiny local helper
+const err = (e: any) =>
+  !e
+    ? undefined
+    : typeof e === "string"
+      ? { message: e }
+      : {
+          status: e?.status ?? e?.originalStatus,
+          message:
+            e?.data?.message ??
+            e?.error ??
+            e?.message ??
+            (typeof e?.data === "string" ? e.data : undefined),
+          data: typeof e?.data === "object" ? e.data : undefined,
+        };
+
 const Header = forwardRef<HeaderHandle, Props>(function Header(
-  { searchQuery, setSearchQuery, setShowUserDropdown },
+  { searchQuery, setSearchQuery, usersQ, currentUser, filteredUsers, handleFriendshipRequest },
   ref
 ) {
+  const [show, setShow] = useState(false);
+
   useImperativeHandle(
     ref,
     () => ({
       resetSearch: () => setSearchQuery(""),
-      toggleDropdown: () => setShowUserDropdown((v) => !v),
+      toggleDropdown: () => setShow((v) => !v),
     }),
-    [setSearchQuery, setShowUserDropdown]
+    [setSearchQuery]
   );
 
   return (
@@ -42,7 +67,7 @@ const Header = forwardRef<HeaderHandle, Props>(function Header(
         <Button
           variant="outline-secondary"
           className="add-button"
-          onClick={() => setShowUserDropdown(true)}
+          onClick={() => setShow(true)}
         >
           +
         </Button>
@@ -51,11 +76,7 @@ const Header = forwardRef<HeaderHandle, Props>(function Header(
       <div className="message-sort-dropdown">
         <span>Sort by </span>
         <Dropdown>
-          <Dropdown.Toggle
-            variant="link"
-            id="dropdown-basic"
-            className="message-dropdown-toggle"
-          >
+          <Dropdown.Toggle variant="link" id="dropdown-basic" className="message-dropdown-toggle">
             Newest
           </Dropdown.Toggle>
           <Dropdown.Menu>
@@ -69,6 +90,17 @@ const Header = forwardRef<HeaderHandle, Props>(function Header(
         <img src={Message} className="message-img" alt="logo" />
         <p>ALL MESSAGES</p>
       </div>
+
+      {/* ✅ moved here */}
+      <UserModal
+        showUserDropdown={show}
+        setShowUserDropdown={setShow}
+        loadingUsers={usersQ?.isLoading}
+        errorUsers={err(usersQ?.error)}
+        currentUser={currentUser}
+        filteredUsers={filteredUsers}
+        handleFriendshipRequest={handleFriendshipRequest}
+      />
     </div>
   );
 });

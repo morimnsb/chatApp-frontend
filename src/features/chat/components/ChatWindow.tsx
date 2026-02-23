@@ -1,3 +1,4 @@
+// chatApp-frontend\src\features\chat\components\ChatWindow.tsx
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Form, Button, Spinner, Alert } from "react-bootstrap";
 import { jwtDecode } from "jwt-decode";
@@ -15,10 +16,9 @@ import { useDocTitleBadge } from "@/features/chat/hooks/useDocTitleBadge";
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks";
 import { selectCurrentUserId } from "@/app/store/authSlice";
 
-/* ----------------------------- types (local) ----------------------------- */
+/* ----------------------------- types ----------------------------- */
 
 type TransportStatus = "idle" | "connecting" | "connected" | "disconnected" | string;
-
 export type SendTypingFn = (args: { roomId: number; isTyping: boolean }) => boolean;
 
 export type IncomingPacket = {
@@ -31,8 +31,6 @@ export type IncomingPacket = {
   sender_id?: number | string;
   isTyping?: boolean;
   message?: any;
-  data?: any;
-  room?: any;
   [k: string]: any;
 };
 
@@ -43,27 +41,21 @@ type ChatWindowProps = {
   effectiveKind: string;
   accessToken?: string | null;
 
+  // ✅ still optional (اگر parent خواست بده)
   transportStatus?: TransportStatus;
-  connectionLabel?: string;
-
   sendTyping?: SendTypingFn;
   registerIncoming?: RegisterIncomingFn | null;
 };
 
 /* ----------------------------- helpers ----------------------------- */
 
-const ROOM_TAG = "[ChatWindow]";
-
+const TAG = "[ChatWindow]";
 const isJwt = (t: unknown): t is string => typeof t === "string" && t.split(".").length === 3;
 
 const stripBearer = (t: unknown): string =>
-  String(t || "")
-    .toString()
-    .replace(/^Bearer\s+/i, "")
-    .trim();
+  String(t || "").replace(/^Bearer\s+/i, "").trim();
 
 const toNum = (v: unknown): number | null => {
-  if (v == null) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
@@ -75,154 +67,83 @@ type NormalizedMsg = ChatMessage & {
   chat_room_id?: number | string | null;
 };
 
-function normalizeMsg(raw: any): NormalizedMsg {
+const norm = (raw: any): NormalizedMsg => {
   if (!raw || typeof raw !== "object") return raw;
-
   const id = raw.id ?? raw.message_id ?? null;
-  const roomId = raw.room_id ?? raw.chat_room_id ?? raw.roomId ?? null;
-  const userId = raw.user_id ?? raw.sender_id ?? raw.userId ?? null;
-
-  const content = raw.content ?? raw.text ?? raw.message ?? raw.body ?? null;
-  const createdAt = raw.created_at ?? raw.createdAt ?? raw.ts ?? raw.timestamp ?? null;
-
+  const rid = raw.room_id ?? raw.chat_room_id ?? raw.roomId ?? null;
+  const uid = raw.user_id ?? raw.sender_id ?? raw.userId ?? null;
   return {
     ...raw,
     id,
-    room_id: roomId,
-    chat_room_id: roomId,
-    user_id: userId,
-    sender_id: userId,
-    content,
-    created_at: createdAt,
+    room_id: rid,
+    chat_room_id: rid,
+    user_id: uid,
+    sender_id: uid,
+    content: raw.content ?? raw.text ?? raw.message ?? raw.body ?? null,
+    created_at: raw.created_at ?? raw.createdAt ?? raw.ts ?? raw.timestamp ?? null,
   };
-}
+};
 
-function SelectRoomPlaceholder() {
-  return (
-    <div className="no-chat-selected">
-      <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 16, fontWeight: 800 }}>هیچ گفتگویی انتخاب نشده</div>
-        <div style={{ marginTop: 8, opacity: 0.8 }}>از لیست سمت چپ یک گفتگو را انتخاب کن.</div>
-      </div>
+const canceled = (e: any) =>
+  e?.code === "ERR_CANCELED" ||
+  e?.name === "CanceledError" ||
+  e?.name === "AbortError" ||
+  String(e?.message || "").toLowerCase().includes("canceled");
+
+/* ----------------------------- UI ----------------------------- */
+
+const Placeholder = () => (
+  <div className="no-chat-selected">
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontSize: 16, fontWeight: 800 }}>هیچ گفتگویی انتخاب نشده</div>
+      <div style={{ marginTop: 8, opacity: 0.8 }}>از لیست سمت چپ یک گفتگو را انتخاب کن.</div>
     </div>
-  );
-}
-
-function isCanceled(err: any): boolean {
-  return (
-    err?.code === "ERR_CANCELED" ||
-    err?.name === "CanceledError" ||
-    err?.name === "AbortError" ||
-    String(err?.message || "").toLowerCase().includes("canceled")
-  );
-}
+  </div>
+);
 
 /* ----------------------------- component ----------------------------- */
 
 export default function ChatWindow({
   roomId,
   effectiveKind,
-  accessToken: accessTokenProp,
-
-  transportStatus = "idle",
-  connectionLabel = "—",
+  accessToken: tokenProp,
+  transportStatus: tsProp = "connected", // ✅ default connected (چون دیگه parent نمی‌فرسته)
   sendTyping = () => false,
   registerIncoming = null,
 }: ChatWindowProps) {
   const dispatch = useAppDispatch();
+  const uidFromStore = useAppSelector(selectCurrentUserId);
 
-  // ✅ typed currentUserId from auth slice
-  const currentUserFromStore = useAppSelector(selectCurrentUserId);
+  const token = stripBearer(tokenProp || "");
+  const rid = useMemo(() => toNum(roomId), [roomId]);
+  const url = useMemo(() => (rid ? `/chat/messages/${rid}/` : null), [rid]);
 
-  const accessToken = stripBearer(accessTokenProp || "");
+  const [msgs, setMsgs] = useState<NormalizedMsg[]>([]);
+  const [txt, setTxt] = useState("");
+  const [uiErr, setUiErr] = useState<string | null>(null);
+  const [typingUid, setTypingUid] = useState<number | string | null>(null);
+  const [me, setMe] = useState<number | null>(toNum(uidFromStore));
+  const [loading, setLoading] = useState(false);
 
-  const backend = useMemo(() => String(effectiveKind || "").toLowerCase(), [effectiveKind]);
-
-  const [messages, setMessages] = useState<NormalizedMsg[]>([]);
-  const [messageInput, setMessageInput] = useState<string>("");
-  const [uiError, setUiError] = useState<string | null>(null);
-  const [typingUserId, setTypingUserId] = useState<number | string | null>(null);
-  const [currentUserId, setCurrentUserId] = useState<number | null>(toNum(currentUserFromStore));
-
-  // history meta
-  const [loading, setLoading] = useState<boolean>(false);
-  const [fetchError, setFetchError] = useState<any>(null);
-
-  const seenMessageIdsRef = useRef<Set<any>>(new Set());
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const lastNotifyAtRef = useRef<number>(0);
-  const lastTypingUiAtRef = useRef<number>(0);
-  const notifyAudioRef = useRef<HTMLAudioElement | null>(null);
-
+  const seen = useRef<Set<any>>(new Set());
+  const typingT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastNotifyAt = useRef(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const { bump: bumpTitle } = useDocTitleBadge();
+  const { bump } = useDocTitleBadge();
   const { containerRef, notifyNewMessage, scrollToBottom, showNewBadge, newCount } =
     useAutoScroll({ enabled: true, bottomThresholdPx: 140 });
 
-  const roomIdNum = useMemo(() => {
-    const n = toNum(roomId);
-    return Number.isFinite(Number(n)) ? n : null;
-  }, [roomId]);
-
-  const historyUrl = useMemo(() => {
-    if (!roomIdNum) return null;
-    return `/chat/messages/${roomIdNum}/`;
-  }, [roomIdNum, backend]);
-
-  const sendUrl = useMemo(() => {
-    if (!roomIdNum) return null;
-    return `/chat/messages/${roomIdNum}/`;
-  }, [roomIdNum, backend]);
-
-  useEffect(() => {
-    console.log(ROOM_TAG, "MOUNT", {
-      roomId,
-      roomIdNum,
-      backend: effectiveKind,
-      transportStatus,
-      hasRegisterIncoming: typeof registerIncoming === "function",
-      hasSendTyping: typeof sendTyping === "function",
-      baseURL: (apiClient as any)?.defaults?.baseURL,
-    });
-
-    return () => {
-      console.log(ROOM_TAG, "UNMOUNT", { roomId, roomIdNum });
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const showDeskNotif = useCallback((title: string, body: string) => {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    if (!document.hidden) return;
+    try {
+      new Notification(title, { body });
+    } catch {}
   }, []);
-
-  useEffect(() => {
-    console.log(ROOM_TAG, "PROPS", {
-      roomId,
-      roomIdNum,
-      backend,
-      transportStatus,
-      connectionLabel,
-      currentUserFromStore,
-    });
-  }, [roomId, roomIdNum, backend, transportStatus, connectionLabel, currentUserFromStore]);
-
-  /* -------------------- HARD RESET when room changes -------------------- */
-  useEffect(() => {
-    setMessages([]);
-    setMessageInput("");
-    setUiError(null);
-    setTypingUserId(null);
-    setFetchError(null);
-
-    seenMessageIdsRef.current = new Set();
-
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = null;
-
-    setTimeout(() => scrollToBottom("auto"), 0);
-
-    console.log(ROOM_TAG, "ROOM RESET", { roomId, roomIdNum, historyUrl });
-  }, [roomId, roomIdNum, scrollToBottom, historyUrl]);
-
-  /* -------------------- notifications init -------------------- */
+const wasTypingRef = useRef(false);
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().catch(() => {});
@@ -230,273 +151,195 @@ export default function ChatWindow({
   }, []);
 
   useEffect(() => {
-    notifyAudioRef.current = new Audio("/sounds/incoming.mp3");
+    audioRef.current = new Audio("/sounds/incoming.mp3");
   }, []);
 
-  const showDesktopNotification = useCallback((title: string, body: string) => {
-    if (!("Notification" in window)) return;
-    if (Notification.permission !== "granted") return;
-    if (!document.hidden) return;
-
-    try {
-      new Notification(title, { body });
-    } catch {}
-  }, []);
-
-  /* -------------------- currentUserId from store/JWT//me -------------------- */
+  /* user id */
   useEffect(() => {
-    const idFromStore = toNum(currentUserFromStore);
-    if (idFromStore) {
-      setCurrentUserId(idFromStore);
-      return;
-    }
+    const s = toNum(uidFromStore);
+    if (s) return void setMe(s);
 
-    if (isJwt(accessToken)) {
+    if (isJwt(token)) {
       try {
-        const dec: any = jwtDecode(accessToken);
+        const dec: any = jwtDecode(token);
         const id = dec?.user_id ?? dec?.sub ?? null;
-        if (id) {
-          setCurrentUserId(Number(id));
-          console.log(ROOM_TAG, "currentUserId from JWT", Number(id));
-        }
-      } catch (e: any) {
-        console.warn(ROOM_TAG, "JWT decode skipped:", e?.message);
-      }
+        if (id) setMe(Number(id));
+      } catch {}
     }
-  }, [currentUserFromStore, accessToken]);
+  }, [uidFromStore, token]);
 
   useEffect(() => {
-    const needFetchMe = !currentUserId && !!accessToken;
-    if (!needFetchMe) return;
-
-    let abort = false;
-
+    if (me || !token) return;
+    let dead = false;
     (async () => {
       try {
-        console.log(ROOM_TAG, "GET /auth/me (need currentUserId)");
-        const me: any = await (http as any).get("/auth/me");
-        if (!abort && me?.id) {
-          setCurrentUserId(Number(me.id));
-          console.log(ROOM_TAG, "currentUserId from /auth/me", Number(me.id));
-        }
-      } catch (e: any) {
-        console.warn(ROOM_TAG, "[me] failed:", e?.message);
-      }
+        const x: any = await (http as any).get("/auth/me");
+        if (!dead && x?.id) setMe(Number(x.id));
+      } catch {}
     })();
+    return () => void (dead = true);
+  }, [me, token]);
 
-    return () => {
-      abort = true;
-    };
-  }, [currentUserId, accessToken]);
-
-  /* -------------------- history fetch (HTTP) -------------------- */
+  /* reset on room change */
   useEffect(() => {
-    if (!roomIdNum || !historyUrl) return;
+    setMsgs([]);
+    setTxt("");
+    setUiErr(null);
+    setTypingUid(null);
+    seen.current = new Set();
+    if (typingT.current) clearTimeout(typingT.current);
+    typingT.current = null;
+    setTimeout(() => scrollToBottom("auto"), 0);
+    console.log(TAG, "ROOM RESET", { roomId, rid, url });
+  }, [roomId, rid, url, scrollToBottom]);
+
+  /* history */
+  useEffect(() => {
+    if (!rid || !url) return;
 
     setLoading(true);
-    setFetchError(null);
-    setUiError(null);
+    setUiErr(null);
 
-    console.log(ROOM_TAG, "HISTORY FETCH ->", {
-      historyUrl,
-      baseURL: (apiClient as any)?.defaults?.baseURL,
-    });
-
-    const cancelable = (http as any)?.cancelable?.get?.(historyUrl);
-    if (!cancelable?.promise || !cancelable?.cancel) {
-      console.error(ROOM_TAG, "http.cancelable.get is missing!");
+    const c = (http as any)?.cancelable?.get?.(url);
+    if (!c?.promise || !c?.cancel) {
       setLoading(false);
-      setUiError("Internal error: cancelable HTTP not available.");
-      return;
+      return void setUiErr("Internal error: cancelable HTTP not available.");
     }
 
-    const { promise, cancel } = cancelable;
+    const { promise, cancel } = c;
 
     promise
       .then((data: any) => {
-        let arr: any[] = [];
-        if (Array.isArray(data)) arr = data;
-        else if (Array.isArray(data?.messages)) arr = data.messages;
-        else if (Array.isArray(data?.data)) arr = data.data;
-
-        const normalized = arr.map(normalizeMsg).filter((m) => m && (m as any).id != null);
-
-        const seen = new Set<any>();
-        for (const m of normalized) if ((m as any)?.id) seen.add((m as any).id);
-        seenMessageIdsRef.current = seen;
-
-        setMessages(normalized);
-
+        const arr = Array.isArray(data) ? data : Array.isArray(data?.messages) ? data.messages : data?.data || [];
+        const normalized = (arr as any[]).map(norm).filter((m) => m?.id != null);
+        seen.current = new Set(normalized.map((m) => m.id));
+        setMsgs(normalized);
         setTimeout(() => scrollToBottom("auto"), 0);
-        console.log(ROOM_TAG, "HISTORY LOADED", { roomId: roomIdNum, count: normalized.length });
       })
-      .catch((e: any) => {
-        if (isCanceled(e)) return;
-        console.error(ROOM_TAG, "history fetch error", e);
-        setFetchError(e);
-        setUiError("Error fetching messages. Please try again.");
-      })
+      .catch((e: any) => !canceled(e) && setUiErr("Error fetching messages. Please try again."))
       .finally(() => setLoading(false));
 
     return () => cancel();
-  }, [roomIdNum, historyUrl, scrollToBottom]);
+  }, [rid, url, scrollToBottom]);
 
-  /* -------------------- incoming realtime from parent -------------------- */
-  const handleIncoming = useCallback(
-    (packet: IncomingPacket) => {
-      if (!packet) return;
-
-      const type = packet?.type || (packet?.message ? "message" : "message");
+  /* incoming realtime */
+  const onIncoming = useCallback(
+    (p: IncomingPacket) => {
+      if (!p) return;
+      const type = p.type || (p.message ? "message" : "message");
 
       if (type === "message") {
-        const m = normalizeMsg(packet?.message ?? packet);
+        const m = norm(p.message ?? p);
+        const pr = toNum(m.room_id ?? m.chat_room_id);
+        if (rid && pr && pr !== rid) return;
 
-        const packetRoomId = toNum((m as any)?.room_id ?? (m as any)?.chat_room_id);
-        if (roomIdNum && packetRoomId && packetRoomId !== roomIdNum) return;
-
-        if ((m as any)?.id && !seenMessageIdsRef.current.has((m as any).id)) {
-          seenMessageIdsRef.current.add((m as any).id);
-          setMessages((prev) => [...prev, m]);
+        if (m?.id && !seen.current.has(m.id)) {
+          seen.current.add(m.id);
+          setMsgs((x) => [...x, m]);
           notifyNewMessage();
         }
 
-        // ✅ no "as any" needed if your action creator is typed
-        dispatch(
-          updateMessages({
-            type: "message",
-            room_id: packetRoomId ?? roomIdNum,
-            message: m,
-          })
-        );
+        dispatch(updateMessages({ type: "message", room_id: pr ?? rid, message: m }));
 
-        const senderId = (m as any)?.sender_id;
-        const mine = Number(currentUserId);
-
-        if (senderId && mine && Number(senderId) !== mine) {
+        const sid = (m as any)?.sender_id;
+        if (sid && me && Number(sid) !== Number(me)) {
           const now = Date.now();
-          if (now - lastNotifyAtRef.current > 1200) {
-            lastNotifyAtRef.current = now;
-            toast?.info((m as any)?.content ?? "پیام جدید");
-            notifyAudioRef.current?.play().catch(() => {});
-            showDesktopNotification("پیام جدید", (m as any)?.content || "");
-            bumpTitle(1);
+          if (now - lastNotifyAt.current > 1200) {
+            lastNotifyAt.current = now;
+            const body = (m as any)?.content ?? "پیام جدید";
+            toast?.info(body);
+            audioRef.current?.play().catch(() => {});
+            showDeskNotif("پیام جدید", String(body || ""));
+            bump(1);
           }
         }
         return;
       }
 
       if (type === "typing_indicator" || type === "typing") {
-        const uid = packet.user_id ?? packet.userId ?? packet.sender_id ?? null;
-
-        const rid = toNum(packet.room_id ?? packet.roomId ?? packet.chat_room_id ?? null);
-
-        if (roomIdNum && rid && rid !== roomIdNum) return;
+        const uid = p.user_id ?? p.userId ?? p.sender_id ?? null;
+        const pr = toNum(p.room_id ?? p.roomId ?? p.chat_room_id ?? null);
+        if (rid && pr && pr !== rid) return;
         if (!uid) return;
 
-        const isTyping = Boolean(packet.isTyping);
-
-        if (!isTyping) {
-          if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-          typingTimeoutRef.current = null;
+        if (!p.isTyping) {
+          if (typingT.current) clearTimeout(typingT.current);
+          typingT.current = null;
           dispatch(resetTypingIndicator(uid));
-          setTypingUserId(null);
-          return;
+          return void setTypingUid(null);
         }
 
-        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-        setTypingUserId(uid);
-
-        typingTimeoutRef.current = setTimeout(() => {
+        if (typingT.current) clearTimeout(typingT.current);
+        setTypingUid(uid);
+        typingT.current = setTimeout(() => {
           dispatch(resetTypingIndicator(uid));
-          setTypingUserId(null);
-          typingTimeoutRef.current = null;
+          setTypingUid(null);
+          typingT.current = null;
         }, 3500);
       }
     },
-    [dispatch, currentUserId, notifyNewMessage, showDesktopNotification, bumpTitle, roomIdNum]
+    [dispatch, me, rid, notifyNewMessage, showDeskNotif, bump]
   );
 
   useEffect(() => {
-    if (typeof registerIncoming !== "function") {
-      console.log(ROOM_TAG, "registerIncoming is NOT a function -> realtime will not arrive");
-      return;
-    }
-
-    console.log(ROOM_TAG, "registerIncoming attached ✅");
-    const unsub = registerIncoming(handleIncoming);
-
+    if (typeof registerIncoming !== "function") return;
+    const unsub = registerIncoming(onIncoming);
     return () => {
-      console.log(ROOM_TAG, "registerIncoming detached");
       try {
         (unsub as any)?.();
       } catch {}
     };
-  }, [registerIncoming, handleIncoming]);
+  }, [registerIncoming, onIncoming]);
 
   useEffect(() => {
-    if (transportStatus === "connected") {
-      setTimeout(() => inputRef.current?.focus?.(), 0);
-    }
-  }, [transportStatus, roomIdNum]);
+    if (tsProp === "connected") setTimeout(() => inputRef.current?.focus?.(), 0);
+  }, [tsProp, rid]);
 
-  /* -------------------- send message (HTTP only) -------------------- */
-  const readyToSend =
-    Boolean(roomIdNum) && Number.isFinite(Number(currentUserId)) && transportStatus === "connected";
+  /* send */
+  const ready = Boolean(rid) && Boolean(me) && tsProp === "connected";
 
-  const handleSendMessage = useCallback(
+  const send = useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
+      const text = String(txt || "").trim();
+      setUiErr(null);
 
-      const text = String(messageInput || "").trim();
-      setUiError(null);
-
-      if (!currentUserId) return setUiError("User not ready yet.");
-      if (!text) return setUiError("Message cannot be empty");
-      if (transportStatus !== "connected") return setUiError("Realtime is not connected yet.");
-
+      if (!me) return setUiErr("User not ready yet.");
+      if (!text) return setUiErr("Message cannot be empty");
+if (rid && wasTypingRef.current) {
+  wasTypingRef.current = false;
+  sendTyping?.({ roomId: rid, isTyping: false });
+}
       try {
-        sendTyping?.({ roomId: roomIdNum as number, isTyping: false });
-
-        if (!sendUrl) throw new Error("sendUrl is missing");
-        await (apiClient as any).post(sendUrl, { text, kind: null });
-
-        setMessageInput("");
+        if (!url) throw new Error("sendUrl missing");
+        await (apiClient as any).post(url, { text, kind: null });
+        setTxt("");
         setTimeout(() => scrollToBottom("smooth"), 0);
       } catch (e2: any) {
-        console.error(ROOM_TAG, "sendMessage failed", e2);
-        setUiError(e2?.message || "Failed to send message");
+        setUiErr(e2?.message || "Failed to send message");
       }
     },
-    [messageInput, transportStatus, roomIdNum, currentUserId, scrollToBottom, sendUrl, sendTyping]
+    [txt, me, rid, url, sendTyping, scrollToBottom]
   );
 
-  /* -------------------- typing (UI throttle) -------------------- */
-  const handleInputChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const val = e.target.value;
-      setMessageInput(val);
+  const onChange = useCallback(
+  (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value;
+    setTxt(v);
 
-      if (!currentUserId) return;
-      if (!roomIdNum) return;
-      if (transportStatus !== "connected") return;
+    if (!me || !rid || tsProp !== "connected") return;
 
-      if (!val.trim()) {
-        sendTyping?.({ roomId: roomIdNum, isTyping: false });
-        return;
-      }
+    const typing = Boolean(v.trim());
+    if (wasTypingRef.current === typing) return; // ✅ فقط وقتی state عوض شد
+    wasTypingRef.current = typing;
 
-      const now = Date.now();
-      if (now - lastTypingUiAtRef.current < 800) return;
-      lastTypingUiAtRef.current = now;
+    sendTyping?.({ roomId: rid, isTyping: typing });
+  },
+  [me, rid, tsProp, sendTyping]
+);
 
-      sendTyping?.({ roomId: roomIdNum, isTyping: true });
-    },
-    [currentUserId, roomIdNum, transportStatus, sendTyping]
-  );
-
-  /* -------------------- render -------------------- */
-  if (!roomIdNum) return <SelectRoomPlaceholder />;
-  if (!currentUserId) return <div>Loading user...</div>;
+  if (!rid) return <Placeholder />;
+  if (!me) return <div>Loading user...</div>;
 
   return (
     <div className="chat-window chat-window--full">
@@ -506,53 +349,47 @@ export default function ChatWindow({
         </div>
       )}
 
-      {uiError && <Alert variant="danger">{uiError}</Alert>}
-
-      <div className="connection-status">
-        {connectionLabel || "—"}
-        <span style={{ opacity: 0.6, fontSize: 11, marginLeft: 8 }}>
-          {ROOM_TAG} roomId={roomIdNum} backend={String(effectiveKind)} status={transportStatus}
-        </span>
-      </div>
+      {uiErr && <Alert variant="danger">{uiErr}</Alert>}
 
       <div className="chat-window__body">
         <div className="chat-window__messagesWrap">
-          <ChatMessagesList
-            messages={messages}
-            currentUserId={currentUserId}
-            containerRef={containerRef}
-          />
+          <ChatMessagesList messages={msgs} currentUserId={me} containerRef={containerRef} />
 
           {showNewBadge && (
-            <button
-              type="button"
-              onClick={() => scrollToBottom("smooth")}
-              className="chat-window__newBadge"
-            >
+            <button type="button" onClick={() => scrollToBottom("smooth")} className="chat-window__newBadge">
               New messages ({newCount})
             </button>
           )}
         </div>
 
-        <TypingIndicator typing={typingUserId} />
+        <TypingIndicator typing={typingUid} />
 
-        <Form onSubmit={handleSendMessage} className="chat-input-form">
+        <Form onSubmit={send} className="chat-input-form">
           <Form.Group controlId="messageInput">
             <Form.Control
               ref={inputRef}
               type="text"
-              placeholder={currentUserId ? "Type a message..." : "Loading user…"}
-              value={messageInput}
-              onChange={handleInputChange}
-              disabled={!currentUserId || transportStatus !== "connected"}
-              onBlur={() => sendTyping?.({ roomId: roomIdNum, isTyping: false })}
+              placeholder="Type a message..."
+              value={txt}
+              onChange={onChange}
+              disabled={!ready}
+              onBlur={() => {
+  if (!rid || tsProp !== "connected") return;
+  if (!wasTypingRef.current) return;
+  wasTypingRef.current = false;
+  sendTyping?.({ roomId: rid, isTyping: false });
+}}
             />
           </Form.Group>
 
-          <Button type="submit" variant="primary" disabled={!readyToSend || !messageInput.trim()}>
+          <Button type="submit" variant="primary" disabled={!ready || !txt.trim()}>
             Send
           </Button>
         </Form>
+
+        <div style={{ opacity: 0.55, fontSize: 11, marginTop: 6 }}>
+          {TAG} roomId={rid} backend={String(effectiveKind)} status={String(tsProp)}
+        </div>
       </div>
     </div>
   );

@@ -13,8 +13,6 @@ export type PresenceUserLike =
       [k: string]: any;
     };
 
-export type ConnStateLike = any; // اگر ساختار دقیق داری می‌تونیم دقیقش کنیم
-
 export type DmConvoLike = {
   partnerId?: Id | null;
   partner?: { id?: Id | null } | null;
@@ -25,21 +23,18 @@ export type DmConvoLike = {
 
 const toIdStr = (u: PresenceUserLike): string | null => {
   if (u == null) return null;
-
-  // اگر خود id باشد
   if (typeof u === "string" || typeof u === "number") return String(u);
-
   const id = (u as any)?.id ?? (u as any)?.user_id ?? (u as any)?.user?.id ?? (u as any)?.pivot?.user_id;
   return id == null ? null : String(id);
 };
 
 type Args = {
   isNode?: boolean;
-  onlineUsersNode?: PresenceUserLike[] | null;
-  connStateNode?: ConnStateLike;
-  onlineUsersReverb?: PresenceUserLike[] | null;
-  connStateReverb?: ConnStateLike;
-  dmList?: DmConvoLike[] | null;
+  onlineUsersNode?: PresenceUserLike[];
+  connStateNode?: any;
+  onlineUsersReverb?: PresenceUserLike[];
+  connStateReverb?: any;
+  dmList?: DmConvoLike[];
 };
 
 export default function usePresenceMerge({
@@ -55,7 +50,7 @@ export default function usePresenceMerge({
 
   const onlineIdSet = useMemo(() => {
     const set = new Set<string>();
-    (Array.isArray(onlineUsers) ? onlineUsers : []).forEach((u) => {
+    (onlineUsers ?? []).forEach((u) => {
       const s = toIdStr(u);
       if (s) set.add(s);
     });
@@ -63,16 +58,11 @@ export default function usePresenceMerge({
   }, [onlineUsers]);
 
   const dmListWithPresence = useMemo(() => {
-    const list = Array.isArray(dmList) ? dmList : [];
-
+    const list = dmList ?? [];
     return list.map((convo) => {
       const pid = convo?.partnerId ?? convo?.partner?.id ?? convo?.user_id ?? null;
-
-      // اگر presence نداریم، مقدار قبلی را نگه دار
       const hasPresence = onlineIdSet.size > 0;
-      const isOnlineNow =
-        hasPresence && pid != null ? onlineIdSet.has(String(pid)) : convo?.is_online;
-
+      const isOnlineNow = hasPresence && pid != null ? onlineIdSet.has(String(pid)) : convo?.is_online;
       return { ...convo, is_online: Boolean(isOnlineNow) } as DmConvoLike;
     });
   }, [dmList, onlineIdSet]);

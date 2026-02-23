@@ -2,9 +2,10 @@
 import Echo from "laravel-echo";
 import Pusher from "pusher-js";
 
-// ✅ redux actions
 import { wsConnected, wsDisconnected, wsError } from "@/app/store/wsActions";
 import type { AppDispatch } from "@/app/store/store";
+
+import apiClient, { type AppAxiosRequestConfig } from "@/shared/api/apiClient";
 
 const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_WS_DEBUG_LEVEL || "0") !== "0";
@@ -12,15 +13,11 @@ const log = (...a: any[]) => DEBUG && console.log("[realtime]", ...a);
 
 type WsErrorPayload = Record<string, any>;
 
-// ✅ minimal store type
-type StoreLike = {
-  dispatch: AppDispatch;
-};
+type StoreLike = { dispatch: AppDispatch };
 
 let _echo: any | null = null;
 let _tokenKey: string | null = null;
 
-// ✅ store hook (like apiClient)
 let _store: StoreLike | null = null;
 export function attachRealtimeStore(store: StoreLike) {
   _store = store;
@@ -47,13 +44,13 @@ function getCfg() {
     wsHost: (import.meta.env as any).VITE_PUSHER_HOST || "127.0.0.1",
     wsPort: Number((import.meta.env as any).VITE_PUSHER_PORT || 8080),
     forceTLS: envBool((import.meta.env as any).VITE_PUSHER_TLS),
+    // ✅ keep default, but authorizer below will call relative "/broadcasting/auth"
     authEndpoint:
       (import.meta.env as any).VITE_PUSHER_AUTH_ENDPOINT ||
       "http://localhost:8000/api/broadcasting/auth",
   };
 }
 
-// ✅ keep connection bindings to unbind later
 let _conn: any | null = null;
 let _bound: {
   state_change: ((s: any) => void) | null;
@@ -111,16 +108,15 @@ function bindConnState(echo: any) {
   };
 
   const onError = (err: any) => {
-    const payload: WsErrorPayload =
-  err?.error || err || { message: "Unknown pusher error" };
+    const payload: WsErrorPayload = err?.error || err || { message: "Unknown pusher error" };
 
-const msg =
-  typeof payload === "string"
-    ? payload
-    : String(payload?.message || payload?.error?.message || "Unknown pusher error");
+    const msg =
+      typeof payload === "string"
+        ? payload
+        : String(payload?.message || payload?.error?.message || "Unknown pusher error");
 
-log("pusher error", payload);
-dispatchSafe(wsError(msg));
+    log("pusher error", payload);
+    dispatchSafe(wsError(msg));
   };
 
   _bound.state_change = onStateChange;
@@ -141,7 +137,6 @@ dispatchSafe(wsError(msg));
     conn.bind("error", onError);
   } catch {}
 
-  // snapshot اولیه
   try {
     if (conn.state === "connected") dispatchSafe(wsConnected());
   } catch {}
@@ -152,10 +147,7 @@ export function destroyEcho(reason: string = "destroy") {
 
   try {
     log("destroyEcho", { reason });
-
-    // ✅ update redux state too
     dispatchSafe(wsDisconnected());
-
     unbindConnState();
     _echo.disconnect();
   } catch {}
@@ -164,7 +156,6 @@ export function destroyEcho(reason: string = "destroy") {
   _tokenKey = null;
 }
 
-// ✅ this is what useUserEvents needs
 export function getOrCreateEcho(accessToken: unknown): any | null {
   const token = stripBearer(accessToken);
 
@@ -181,7 +172,6 @@ export function getOrCreateEcho(accessToken: unknown): any | null {
 
   if (_echo) destroyEcho("token-changed");
 
-  // لازم برای laravel-echo
   (window as any).Pusher = Pusher;
 
   log("create Echo", {
@@ -189,6 +179,7 @@ export function getOrCreateEcho(accessToken: unknown): any | null {
     wsPort: cfg.wsPort,
     forceTLS: cfg.forceTLS,
     authEndpoint: cfg.authEndpoint,
+    tokenKey: nextTokenKey,
   });
 
   try {
@@ -202,9 +193,31 @@ export function getOrCreateEcho(accessToken: unknown): any | null {
       wssPort: cfg.wsPort,
       forceTLS: cfg.forceTLS,
       enabledTransports: ["ws", "wss"],
+      disableStats: true,
 
+      // still ok to keep:
       authEndpoint: cfg.authEndpoint,
 
+      // ✅ ENTERPRISE: force auth via YOUR apiClient interceptors (adds Bearer)
+      authorizer: (channel: any) => ({
+        authorize: (socketId: string, callback: (err: any, data: any) => void) => {
+          const config: AppAxiosRequestConfig = {
+            hasAuth: true,
+            headers: {
+              Accept: "application/json",
+              "X-Requested-With": "XMLHttpRequest",
+            },
+          };
+
+          apiClient
+            // ✅ relative path => baseURL is chosen by backendChoice (reverb)
+            .post("/broadcasting/auth", { socket_id: socketId, channel_name: channel.name }, config)
+            .then((res) => callback(null, res.data))
+            .catch((err) => callback(err, null));
+        },
+      }),
+
+      // keep as fallback (some versions read this)
       auth: {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -218,21 +231,33 @@ export function getOrCreateEcho(accessToken: unknown): any | null {
 
     _tokenKey = nextTokenKey;
 
-    // ✅ bind pusher connection events to redux
     bindConnState(_echo);
 
     return _echo;
   } catch (e: any) {
     const payload: WsErrorPayload = { message: e?.message || String(e) };
-const msg = String(payload.message || "Echo create failed");
+    const msg = String(payload.message || "Echo create failed");
 
-dispatchSafe(wsError(msg));
-log("Echo create failed", payload);
+    dispatchSafe(wsError(msg));
+    log("Echo create failed", payload);
 
     _echo = null;
     _tokenKey = null;
 
     dispatchSafe(wsDisconnected());
     return null;
+  }
+}
+
+
+// ✅ WS-only typing via Echo whisper (no HTTP)
+export function whisperTyping(roomId: number, payload: any): boolean {
+  try {
+    if (!_echo || !roomId) return false;
+    const ch = _echo.private(`chat.${roomId}`);
+    ch.whisper("typing", payload);
+    return true;
+  } catch {
+    return false;
   }
 }

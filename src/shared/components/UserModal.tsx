@@ -15,7 +15,12 @@ type ApiErrorLike =
       [k: string]: any;
     };
 
-type FriendshipStatus = "accepted" | "pending_outgoing" | "pending_incoming" | "none" | string;
+type FriendshipStatus =
+  | "accepted"
+  | "pending_outgoing"
+  | "pending_incoming"
+  | "none"
+  | string;
 
 type UserLike = {
   id?: number | string | null;
@@ -31,6 +36,10 @@ type UserLike = {
   avatar?: string | null;
 
   friendship_status?: FriendshipStatus | null;
+
+  // optional hints
+  dm_room_id?: number | string | null;
+  room_id?: number | string | null;
 
   [k: string]: any;
 };
@@ -51,13 +60,21 @@ type Props = {
   currentUser?: CurrentUserLike | null;
 
   handleFriendshipRequest: (userId: number | string) => void;
+
+  // ✅ NEW: open chat directly for accepted friends (or if dm_room_id provided)
+  onSelectUserChat?: (roomId: number, receiverId?: number) => void;
+
+  // ✅ NEW: respond to incoming friend request
+  onRespondFriendRequest?: (
+    userId: number | string,
+    action: "accept" | "reject"
+  ) => void;
 };
 
 const errText = (e: ApiErrorLike): string | null => {
   if (!e) return null;
   if (typeof e === "string") return e;
 
-  // RTK Query style: { status, data, error }
   if (typeof e === "object" && e && "status" in e) {
     return (
       (e as any)?.data?.message ||
@@ -65,7 +82,6 @@ const errText = (e: ApiErrorLike): string | null => {
       `خطا در دریافت کاربران (status: ${(e as any)?.status})`
     );
   }
-
   return (e as any)?.message || (e as any)?.detail || "خطا در دریافت کاربران";
 };
 
@@ -87,8 +103,15 @@ function UserModal({
   filteredUsers = [],
   currentUser,
   handleFriendshipRequest,
+  onSelectUserChat,
+  onRespondFriendRequest,
 }: Props) {
   const close = () => setShowUserDropdown(false);
+
+  const toNum = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
 
   return (
     <Modal show={showUserDropdown} onHide={close}>
@@ -107,8 +130,7 @@ function UserModal({
               <ListGroup.Item>کاربری موجود نیست</ListGroup.Item>
             ) : (
               filteredUsers.map((u) => {
-                const id = (u.id ?? u.pk) as number | string | null | undefined;
-
+                const id = u.id ?? u.pk;
                 const name =
                   u.first_name ||
                   u.firstName ||
@@ -128,7 +150,23 @@ function UserModal({
                   Number(id) === Number(currentUser.id);
 
                 const st = (u.friendship_status || "none") as FriendshipStatus;
-                const { v, t, dis } = uiByStatus[String(st)] || uiByStatus.none;
+                const ui = uiByStatus[String(st)] || uiByStatus.none;
+
+                const dmRoom =
+                  toNum(u.dm_room_id) ?? toNum(u.room_id) ?? null;
+
+                const canOpenChat =
+                  !isSelf &&
+                  Boolean(onSelectUserChat) &&
+                  (st === "accepted" || dmRoom != null);
+
+                const openChat = () => {
+                  if (!canOpenChat) return;
+                  const roomId = dmRoom ?? 0;
+                  if (!roomId) return; // اگر هنوز dm_room_id نداریم، اینجا بی‌صدا رد می‌شیم
+                  onSelectUserChat?.(roomId, id as any);
+                  close();
+                };
 
                 return (
                   <ListGroup.Item
@@ -136,9 +174,10 @@ function UserModal({
                     as="div"
                     className="d-flex justify-content-between align-items-center"
                     style={{
-                      cursor: isSelf ? "not-allowed" : "default",
+                      cursor: isSelf ? "not-allowed" : canOpenChat ? "pointer" : "default",
                       opacity: isSelf ? 0.6 : 1,
                     }}
+                    onClick={openChat}
                   >
                     <div className="d-flex align-items-center">
                       <img src={avatar} alt={name} className="profile-img me-2" />
@@ -160,19 +199,46 @@ function UserModal({
                       )}
                     </div>
 
-                    {!isSelf && (
-                      <Button
-                        variant={v}
-                        disabled={dis}
-                        onClick={() => {
-                          if (st !== "none") return;
-                          if (id == null) return;
-                          handleFriendshipRequest(id);
-                          close();
-                        }}
-                      >
-                        {t}
-                      </Button>
+                    {/* ✅ incoming request: Accept/Reject */}
+                    {!isSelf && st === "pending_incoming" && onRespondFriendRequest ? (
+                      <div className="d-flex gap-2" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="success"
+                          onClick={() => {
+                            if (id == null) return;
+                            onRespondFriendRequest(id, "accept");
+                            close();
+                          }}
+                        >
+                          قبول
+                        </Button>
+                        <Button
+                          variant="outline-danger"
+                          onClick={() => {
+                            if (id == null) return;
+                            onRespondFriendRequest(id, "reject");
+                            close();
+                          }}
+                        >
+                          رد
+                        </Button>
+                      </div>
+                    ) : (
+                      !isSelf && (
+                        <Button
+                          variant={ui.v}
+                          disabled={ui.dis}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (st !== "none") return;
+                            if (id == null) return;
+                            handleFriendshipRequest(id);
+                            close();
+                          }}
+                        >
+                          {ui.t}
+                        </Button>
+                      )
                     )}
                   </ListGroup.Item>
                 );
