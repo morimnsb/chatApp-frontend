@@ -41,7 +41,6 @@ type ChatWindowProps = {
   effectiveKind: string;
   accessToken?: string | null;
 
-  // ✅ still optional (اگر parent خواست بده)
   transportStatus?: TransportStatus;
   sendTyping?: SendTypingFn;
   registerIncoming?: RegisterIncomingFn | null;
@@ -107,7 +106,7 @@ export default function ChatWindow({
   roomId,
   effectiveKind,
   accessToken: tokenProp,
-  transportStatus: tsProp = "connected", // ✅ default connected (چون دیگه parent نمی‌فرسته)
+  transportStatus: tsProp = "connected",
   sendTyping = () => false,
   registerIncoming = null,
 }: ChatWindowProps) {
@@ -130,6 +129,7 @@ export default function ChatWindow({
   const lastNotifyAt = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const wasTypingRef = useRef(false);
 
   const { bump } = useDocTitleBadge();
   const { containerRef, notifyNewMessage, scrollToBottom, showNewBadge, newCount } =
@@ -143,7 +143,7 @@ export default function ChatWindow({
       new Notification(title, { body });
     } catch {}
   }, []);
-const wasTypingRef = useRef(false);
+
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().catch(() => {});
@@ -187,8 +187,11 @@ const wasTypingRef = useRef(false);
     setUiErr(null);
     setTypingUid(null);
     seen.current = new Set();
+    wasTypingRef.current = false;
+
     if (typingT.current) clearTimeout(typingT.current);
     typingT.current = null;
+
     setTimeout(() => scrollToBottom("auto"), 0);
     console.log(TAG, "ROOM RESET", { roomId, rid, url });
   }, [roomId, rid, url, scrollToBottom]);
@@ -210,7 +213,12 @@ const wasTypingRef = useRef(false);
 
     promise
       .then((data: any) => {
-        const arr = Array.isArray(data) ? data : Array.isArray(data?.messages) ? data.messages : data?.data || [];
+        const arr = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.messages)
+            ? data.messages
+            : data?.data || [];
+
         const normalized = (arr as any[]).map(norm).filter((m) => m?.id != null);
         seen.current = new Set(normalized.map((m) => m.id));
         setMsgs(normalized);
@@ -306,37 +314,60 @@ const wasTypingRef = useRef(false);
 
       if (!me) return setUiErr("User not ready yet.");
       if (!text) return setUiErr("Message cannot be empty");
-if (rid && wasTypingRef.current) {
-  wasTypingRef.current = false;
-  sendTyping?.({ roomId: rid, isTyping: false });
-}
+
+      if (rid && wasTypingRef.current) {
+        wasTypingRef.current = false;
+        sendTyping?.({ roomId: rid, isTyping: false });
+      }
+
       try {
         if (!url) throw new Error("sendUrl missing");
-        await (apiClient as any).post(url, { text, kind: null });
+
+        const res: any = await (apiClient as any).post(url, { text, kind: null });
+
+        const rawMsg = res?.message ?? res?.data?.message ?? null;
+        const localMsg = rawMsg ? norm(rawMsg) : null;
+
+        if (localMsg?.id != null && !seen.current.has(localMsg.id)) {
+          seen.current.add(localMsg.id);
+          setMsgs((prev) => [...prev, localMsg]);
+          notifyNewMessage();
+        }
+
+        if (localMsg) {
+          dispatch(
+            updateMessages({
+              type: "message",
+              room_id: rid,
+              message: localMsg,
+            })
+          );
+        }
+
         setTxt("");
         setTimeout(() => scrollToBottom("smooth"), 0);
       } catch (e2: any) {
         setUiErr(e2?.message || "Failed to send message");
       }
     },
-    [txt, me, rid, url, sendTyping, scrollToBottom]
+    [txt, me, rid, url, sendTyping, scrollToBottom, dispatch, notifyNewMessage]
   );
 
   const onChange = useCallback(
-  (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.value;
-    setTxt(v);
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const v = e.target.value;
+      setTxt(v);
 
-    if (!me || !rid || tsProp !== "connected") return;
+      if (!me || !rid || tsProp !== "connected") return;
 
-    const typing = Boolean(v.trim());
-    if (wasTypingRef.current === typing) return; // ✅ فقط وقتی state عوض شد
-    wasTypingRef.current = typing;
+      const typing = Boolean(v.trim());
+      if (wasTypingRef.current === typing) return;
+      wasTypingRef.current = typing;
 
-    sendTyping?.({ roomId: rid, isTyping: typing });
-  },
-  [me, rid, tsProp, sendTyping]
-);
+      sendTyping?.({ roomId: rid, isTyping: typing });
+    },
+    [me, rid, tsProp, sendTyping]
+  );
 
   if (!rid) return <Placeholder />;
   if (!me) return <div>Loading user...</div>;
@@ -356,7 +387,11 @@ if (rid && wasTypingRef.current) {
           <ChatMessagesList messages={msgs} currentUserId={me} containerRef={containerRef} />
 
           {showNewBadge && (
-            <button type="button" onClick={() => scrollToBottom("smooth")} className="chat-window__newBadge">
+            <button
+              type="button"
+              onClick={() => scrollToBottom("smooth")}
+              className="chat-window__newBadge"
+            >
               New messages ({newCount})
             </button>
           )}
@@ -374,11 +409,11 @@ if (rid && wasTypingRef.current) {
               onChange={onChange}
               disabled={!ready}
               onBlur={() => {
-  if (!rid || tsProp !== "connected") return;
-  if (!wasTypingRef.current) return;
-  wasTypingRef.current = false;
-  sendTyping?.({ roomId: rid, isTyping: false });
-}}
+                if (!rid || tsProp !== "connected") return;
+                if (!wasTypingRef.current) return;
+                wasTypingRef.current = false;
+                sendTyping?.({ roomId: rid, isTyping: false });
+              }}
             />
           </Form.Group>
 
