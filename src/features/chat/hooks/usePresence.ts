@@ -1,13 +1,18 @@
-// chatApp-frontend\src\features\chat\hooks\usePresence.ts
+// chatApp-frontend/src/features/chat/hooks/usePresence.ts
 import { useEffect, useMemo, useState } from "react";
-import { getOrCreateEcho } from "@/shared/config/realtime"; // ✅ اگر realtime.ts شد
+import { getOrCreateEcho } from "@/shared/config/realtime";
+import {
+  subscribePresenceJoin,
+  subscribePresenceLeave,
+  subscribePresenceOnline,
+  subscribeConnState,
+} from "@/shared/ws/socketClient";
 
 const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || "") === "true";
 const log = (...a: any[]) => DEBUG && console.log("[usePresence]", ...a);
 
 const PRESENCE_NAME_REVERB = "global";
-const PRESENCE_NAME_NODE = "presence.global";
 
 type Id = string | number;
 
@@ -43,38 +48,11 @@ const toIdStr = (u: unknown): string | null => {
   return id == null ? null : String(id);
 };
 
-function buildWsUrlFromApiBase(apiBase: unknown, token: unknown): string {
-  const base = String(apiBase || "").replace(/\/+$/, "");
-  const httpBase = base.endsWith("/api") ? base.slice(0, -4) : base;
-  const wsBase = httpBase.replace(/^https:/i, "wss:").replace(/^http:/i, "ws:");
-  return `${wsBase}/ws?token=${encodeURIComponent(String(token || ""))}`;
-}
-
-/* -------------------- Node WS message types -------------------- */
-
-type NodeWsBase = { type: string; [k: string]: any };
-
-type NodeSubscribed = { type: "subscribed"; roomId: string };
-type NodePresenceHere = { type: "presence_here"; room: string; users: PresenceUser[] };
-type NodePresenceJoin = { type: "presence_join"; room: string; user: PresenceUser };
-type NodePresenceLeave = { type: "presence_leave"; room: string; user: PresenceUser };
-
-type NodeWsMsg = NodeSubscribed | NodePresenceHere | NodePresenceJoin | NodePresenceLeave | NodeWsBase;
-
-function parseNodeMsg(raw: unknown): NodeWsMsg | null {
-  try {
-    const obj = JSON.parse(String((raw as any)?.data ?? raw ?? ""));
-    if (!obj || typeof obj !== "object") return null;
-    return obj as NodeWsMsg;
-  } catch {
-    return null;
-  }
-}
-
 export function usePresence({ backendKind, token, currentUserId }: UsePresenceArgs = {}) {
   const backend = String(backendKind || "").toLowerCase() as PresenceBackendKind;
   const isReverb = backend === "reverb";
   const isNode = backend === "node";
+  const isDjango = backend === "django";
 
   const hasToken = Boolean(token);
   const hasUser = Number(currentUserId) > 0;
@@ -82,21 +60,19 @@ export function usePresence({ backendKind, token, currentUserId }: UsePresenceAr
   const [onlineUsers, setOnlineUsers] = useState<PresenceUser[]>([]);
   const [connState, setConnState] = useState<ConnState>("unknown");
 
-  // ---------- Reverb key ----------
   const key = useMemo(() => {
     if (!isReverb || !hasToken || !hasUser) return null;
     const tk = String(token).slice(0, 18);
     return `reverb|presence|${currentUserId}|${tk}`;
   }, [isReverb, hasToken, hasUser, currentUserId, token]);
 
-  // ---------- Node key ----------
-  const nodeKey = useMemo(() => {
-    if (!isNode || !hasToken || !hasUser) return null;
+  const busKey = useMemo(() => {
+    if (!(isNode || isDjango) || !hasToken || !hasUser) return null;
     const tk = String(token).slice(0, 18);
-    return `node|presence|${currentUserId}|${tk}`;
-  }, [isNode, hasToken, hasUser, currentUserId, token]);
+    return `${backend}|presence|${currentUserId}|${tk}`;
+  }, [backend, isNode, isDjango, hasToken, hasUser, currentUserId, token]);
 
-  /* ===================== Reverb (Echo Presence) ===================== */
+  /* ===================== Reverb ===================== */
 
   useEffect(() => {
     if (!key) return;
@@ -142,7 +118,7 @@ export function usePresence({ backendKind, token, currentUserId }: UsePresenceAr
       ch.here((users: PresenceUser[]) => {
         const arr = Array.isArray(users) ? users : [];
         setOnlineUsers(arr);
-        log("here ✅", { count: arr.length });
+        log("reverb here ✅", { count: arr.length });
       });
 
       ch.joining((user: PresenceUser) => {
@@ -162,9 +138,9 @@ export function usePresence({ backendKind, token, currentUserId }: UsePresenceAr
       });
 
       setConnState("connected");
-      log("presence joined ✅", { name: PRESENCE_NAME_REVERB });
+      log("reverb presence joined ✅", { name: PRESENCE_NAME_REVERB });
     } catch (e) {
-      log("presence join failed", e);
+      log("reverb presence join failed", e);
       setConnState("error");
     }
 
@@ -177,87 +153,55 @@ export function usePresence({ backendKind, token, currentUserId }: UsePresenceAr
     };
   }, [key, token]);
 
-  /* ===================== Node WS Presence ===================== */
+  /* ===================== Node + Django via socketClient ===================== */
 
   useEffect(() => {
-    if (!nodeKey) return;
-
-    const API = String((import.meta.env as any).VITE_API_URL_NODE || "").replace(/\/+$/, "");
-    if (!API) {
-      setConnState("error-missing-api");
-      return;
-    }
+    if (!busKey) return;
 
     setOnlineUsers([]);
     setConnState("connecting");
 
-    const wsUrl = buildWsUrlFromApiBase(API, token);
-    log("[node] presence connecting", { wsUrl });
+    const unsubConn = subscribeConnState((evt) => {
+      const state = String(evt?.state || "").toLowerCase();
+      if (state === "connected") setConnState("connected");
+      else if (state === "disconnected") setConnState("idle");
+      else if (state === "error") setConnState("error");
+    });
 
-    const ws = new WebSocket(wsUrl);
+    const unsubOnline = subscribePresenceOnline((payload: any) => {
+      const ids = Array.isArray(payload?.ids) ? payload.ids : [];
+      const users = ids.map((id: any) => ({ id }));
+      setOnlineUsers(users);
+      log(`${backend} presence:online`, payload);
+    });
 
-    const sendJson = (obj: unknown) => {
-      try {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-      } catch {}
-    };
+    const unsubJoin = subscribePresenceJoin((payload: any) => {
+      const id = toIdStr(payload?.userId ?? payload?.user_id ?? payload?.user);
+      if (!id) return;
 
-    ws.onopen = () => {
-      setConnState("subscribing");
-      sendJson({ type: "subscribe", roomId: PRESENCE_NAME_NODE });
-      log("[node] presence subscribe ->", PRESENCE_NAME_NODE);
-    };
+      setOnlineUsers((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        if (arr.some((x) => toIdStr(x) === id)) return arr;
+        return [...arr, { id }];
+      });
+    });
 
-    ws.onmessage = (ev) => {
-      const data = parseNodeMsg(ev);
-      if (!data) return;
+    const unsubLeave = subscribePresenceLeave((payload: any) => {
+      const id = toIdStr(payload?.userId ?? payload?.user_id ?? payload?.user);
+      if (!id) return;
 
-      if (data.type === "subscribed" && String((data as any).roomId) === PRESENCE_NAME_NODE) {
-        setConnState("connected");
-        return;
-      }
-
-      if (data.type === "presence_here" && String((data as any).room) === PRESENCE_NAME_NODE) {
-        const users = Array.isArray((data as any).users) ? ((data as any).users as PresenceUser[]) : [];
-        setOnlineUsers(users);
-        log("[node] presence_here", { count: users.length });
-        return;
-      }
-
-      if (data.type === "presence_join" && String((data as any).room) === PRESENCE_NAME_NODE) {
-        const u = (data as any).user as PresenceUser;
-        const id = toIdStr(u);
-        if (!id) return;
-
-        setOnlineUsers((prev) => {
-          const arr = Array.isArray(prev) ? prev : [];
-          if (arr.some((x) => toIdStr(x) === id)) return arr;
-          return [...arr, u];
-        });
-        return;
-      }
-
-      if (data.type === "presence_leave" && String((data as any).room) === PRESENCE_NAME_NODE) {
-        const u = (data as any).user as PresenceUser;
-        const id = toIdStr(u);
-        if (!id) return;
-
-        setOnlineUsers((prev) => (Array.isArray(prev) ? prev.filter((x) => toIdStr(x) !== id) : []));
-        return;
-      }
-    };
-
-    ws.onerror = () => setConnState("error");
-    ws.onclose = () => setConnState("idle");
+      setOnlineUsers((prev) => (Array.isArray(prev) ? prev.filter((x) => toIdStr(x) !== id) : []));
+    });
 
     return () => {
-      try {
-        ws.close();
-      } catch {}
+      unsubConn();
+      unsubOnline();
+      unsubJoin();
+      unsubLeave();
       setConnState("idle");
       setOnlineUsers([]);
     };
-  }, [nodeKey, token]);
+  }, [busKey, backend]);
 
   return { onlineUsers, connState } as const;
 }

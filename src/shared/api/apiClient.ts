@@ -1,5 +1,4 @@
 // chatApp-frontend\src\shared\api\apiClient.ts
-// chatApp-frontend/src/shared/api/apiClient.ts
 import axios, {
   AxiosError,
   AxiosInstance,
@@ -8,13 +7,17 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from "axios";
 
+import {
+  getChosenBackendKey,
+  resolveApiBase,
+  type BackendKey,
+} from "@/shared/backend";
+
 /* ------------------------- types ------------------------- */
 export type BackendKind =
-  | "reverb"
+  | BackendKey
   | "laravel"
-  | "node"
   | "nest"
-  | "django"
   | "fastapi"
   | (string & {});
 
@@ -22,28 +25,20 @@ export type AppStoreLike = {
   getState?: () => any;
 };
 
-// ✅ your custom flags
 export type AppAxiosRequestConfig = AxiosRequestConfig & {
   hasAuth?: boolean; // default true
 };
 
-type EnvKey =
-  | "VITE_API_BASE_REVERB"
-  | "VITE_API_BASE_NODE"
-  | "VITE_API_BASE_NEST"
-  | "VITE_API_BASE_DJANGO"
-  | "VITE_API_BASE_FASTAPI"
-  | "VITE_API_URL"
-  | "VITE_CHAT_DEBUG";
-
 /* ------------------------- URL helpers ------------------------- */
 const ABSOLUTE_RE = /^(?:https?:)?\/\//i;
+
 const isAbsoluteUrl = (u: unknown) => ABSOLUTE_RE.test(String(u ?? ""));
 
 function normalizeUrl(path: unknown): string | null {
   const p = String(path ?? "").trim();
   if (!p) return null;
   if (isAbsoluteUrl(p)) return p;
+
   const cleaned = p.replace(/^\/+/, "").replace(/\s+/g, "");
   return `/${cleaned}`;
 }
@@ -51,64 +46,66 @@ function normalizeUrl(path: unknown): string | null {
 function buildFullUrl(config: AxiosRequestConfig): string {
   const base = String((config as any)?.baseURL ?? "").replace(/\/+$/, "");
   const url = String((config as any)?.url ?? "");
+
   if (isAbsoluteUrl(url)) return url;
+
   const path = url.replace(/^\/+/, "");
   return base ? `${base}/${path}` : `/${path}`;
 }
 
-/* ------------------------- ENV ------------------------- */
+/* ------------------------- env / debug ------------------------- */
 const DEV = import.meta.env.DEV === true;
 const DEBUG = DEV && String(import.meta.env.VITE_CHAT_DEBUG || "") === "true";
 
-/* ------------------------- backend -> env map ------------------------- */
-const BACKEND_ENV_MAP: Record<string, EnvKey> = {
-  reverb: "VITE_API_BASE_REVERB",
-  laravel: "VITE_API_BASE_REVERB", // alias safety
-  node: "VITE_API_BASE_NODE",
-  nest: "VITE_API_BASE_NEST",
-  django: "VITE_API_BASE_DJANGO",
-  fastapi: "VITE_API_BASE_FASTAPI",
-};
-
+/* ------------------------- backend helpers ------------------------- */
 export function readBackendChoice(): string | null {
   try {
-    const raw = localStorage.getItem("backendChoice");
-    const v = raw ? String(raw).trim().toLowerCase() : "";
-    return v || null;
+    return getChosenBackendKey();
   } catch {
     return null;
   }
 }
 
-function envBaseFor(kind: BackendKind): string | null {
-  const key = BACKEND_ENV_MAP[String(kind ?? "").toLowerCase()] ?? null;
-  if (!key) return null;
+function normalizeBackendKind(kind?: BackendKind | null): BackendKind | null {
+  const k = String(kind ?? "").trim().toLowerCase();
+  if (!k) return null;
 
-  // ✅ TS: import.meta.env is not indexable by arbitrary string unless we assert it
-  const env = import.meta.env as unknown as Record<string, string | boolean | undefined>;
-  const val = env[key];
-  return val ? String(val) : null;
+  // alias safety
+  if (k === "laravel") return "reverb";
+  return k as BackendKind;
 }
 
 function fallbackBase(): string {
-  return String(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api");
+  return String(import.meta.env.VITE_API_URL || "http://127.0.0.1:8000/api").replace(/\/+$/, "");
 }
 
-export function resolveApiBase(kind?: BackendKind | null): string {
-  const base = envBaseFor(kind ?? "") || envBaseFor(readBackendChoice() ?? "") || fallbackBase();
-  return String(base).replace(/\/+$/, "");
+export function resolveClientApiBase(kind?: BackendKind | null): string {
+  const normalized = normalizeBackendKind(kind);
+  const chosen = normalizeBackendKind(readBackendChoice());
+
+  try {
+    if (normalized) return resolveApiBase(normalized as BackendKey);
+    if (chosen) return resolveApiBase(chosen as BackendKey);
+  } catch {}
+
+  return fallbackBase();
 }
 
 function defaultUseCredentials(kind?: BackendKind | null): boolean {
-  const k = String(kind ?? "").toLowerCase();
-  return k === "reverb" || k === "laravel";
+  const k = String(normalizeBackendKind(kind) ?? "").toLowerCase();
+
+  // Laravel/Reverb can use cookie/sanctum-style flows.
+  // Node/Django normally use Bearer tokens in your current architecture.
+  return k === "reverb";
 }
 
 /* ------------------------- axios instance ------------------------- */
+const initialBackend = readBackendChoice();
+
 const apiClient: AxiosInstance = axios.create({
-  baseURL: resolveApiBase(readBackendChoice()),
+  baseURL: resolveClientApiBase(initialBackend),
   headers: { "Content-Type": "application/json" },
-  withCredentials: defaultUseCredentials(readBackendChoice()),
+  withCredentials: defaultUseCredentials(initialBackend),
 });
 
 let _store: AppStoreLike | null = null;
@@ -118,22 +115,30 @@ export function attachStore(store: AppStoreLike) {
 }
 
 export function setApiBase(nextKind?: BackendKind | null): string {
-  const nextBase = resolveApiBase(nextKind ?? undefined);
-  apiClient.defaults.baseURL = nextBase;
+  const normalized = normalizeBackendKind(nextKind);
+  const nextBase = resolveClientApiBase(normalized);
+  const creds = defaultUseCredentials(normalized);
 
-  const creds = defaultUseCredentials(nextKind ?? undefined);
+  apiClient.defaults.baseURL = nextBase;
   apiClient.defaults.withCredentials = creds;
 
   if (DEBUG) {
     console.log("[apiClient] baseURL set =>", nextBase, {
-      backend: nextKind,
+      backend: normalized,
       withCredentials: creds,
     });
   }
+
   return nextBase;
 }
 
-if (DEBUG) console.log("[apiClient] baseURL set =>", apiClient.defaults.baseURL);
+if (DEBUG) {
+  console.log("[apiClient] init =>", {
+    backend: initialBackend,
+    baseURL: apiClient.defaults.baseURL,
+    withCredentials: apiClient.defaults.withCredentials,
+  });
+}
 
 /* ------------------------- cancel / network detection ------------------------- */
 export const isCanceled = (err: any) =>
@@ -150,7 +155,8 @@ const isNetworkDown = (err: any) =>
 
 function getReduxToken(): string | null {
   try {
-    return (_store?.getState?.() as any)?.auth?.access_token || null;
+    const state = _store?.getState?.() as any;
+    return state?.auth?.access_token || null;
   } catch {
     return null;
   }
@@ -161,49 +167,49 @@ apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     const cfg = config as InternalAxiosRequestConfig & AppAxiosRequestConfig;
 
-    const chosen = readBackendChoice();
-    const nextBase = resolveApiBase(chosen);
+    const chosen = normalizeBackendKind(readBackendChoice());
+    const nextBase = resolveClientApiBase(chosen);
 
-    // default: hasAuth=true for protected endpoints
-    const hasAuth = cfg?.hasAuth !== false;
+    const hasAuth = cfg.hasAuth !== false;
 
     const creds =
-      typeof cfg?.withCredentials === "boolean"
+      typeof cfg.withCredentials === "boolean"
         ? cfg.withCredentials
         : defaultUseCredentials(chosen);
 
-    // sync defaults
     if (apiClient.defaults.baseURL !== nextBase) {
       apiClient.defaults.baseURL = nextBase;
-      if (DEBUG) console.log("[apiClient] baseURL set =>", nextBase, { backend: chosen });
+      if (DEBUG) {
+        console.log("[apiClient] baseURL sync =>", nextBase, { backend: chosen });
+      }
     }
+
     if (apiClient.defaults.withCredentials !== creds) {
       apiClient.defaults.withCredentials = creds;
-      if (DEBUG) console.log("[apiClient] withCredentials =>", creds, { backend: chosen });
+      if (DEBUG) {
+        console.log("[apiClient] withCredentials sync =>", creds, { backend: chosen });
+      }
     }
 
     cfg.baseURL = nextBase;
     cfg.withCredentials = creds;
 
-    // headers (axios v1)
     cfg.headers = cfg.headers || ({} as any);
     const h = cfg.headers as Record<string, any>;
 
     if (!h.Accept) h.Accept = "application/json";
     if (!h["Content-Type"]) h["Content-Type"] = "application/json";
 
-    // attach token only when hasAuth=true
     if (hasAuth) {
       const token = getReduxToken();
       if (token && !h.Authorization) {
         h.Authorization = `Bearer ${String(token).replace(/^Bearer\s+/i, "").trim()}`;
       }
-    } else {
-      if (h.Authorization) delete h.Authorization;
+    } else if (h.Authorization) {
+      delete h.Authorization;
     }
 
-    // normalize url
-    if (cfg?.url) {
+    if (cfg.url) {
       const nu = normalizeUrl(cfg.url);
       if (nu) cfg.url = nu;
     }
@@ -224,7 +230,10 @@ apiClient.interceptors.request.use(
   },
   (err: any) => {
     if (!isCanceled(err)) {
-      console.log("[apiClient] request error", { message: err?.message, code: err?.code });
+      console.log("[apiClient] request error", {
+        message: err?.message,
+        code: err?.code,
+      });
     }
     return Promise.reject(err);
   }
@@ -233,7 +242,12 @@ apiClient.interceptors.request.use(
 /* ------------------------- response interceptor ------------------------- */
 apiClient.interceptors.response.use(
   (res: AxiosResponse) => {
-    if (DEBUG) console.log("[apiClient] <-", { status: res.status, url: buildFullUrl(res.config) });
+    if (DEBUG) {
+      console.log("[apiClient] <-", {
+        status: res.status,
+        url: buildFullUrl(res.config),
+      });
+    }
     return res;
   },
   (err: AxiosError) => {
@@ -244,17 +258,25 @@ apiClient.interceptors.response.use(
     const code = (err as any)?.code;
 
     if (isNetworkDown(err)) {
-      console.log("[apiClient] NETWORK DOWN", { url, code, message: err.message });
+      console.log("[apiClient] xx", {
+  message: err.message,
+  code,
+  status,
+  url,
+  data: JSON.stringify(err.response?.data, null, 2),
+  headers: err.response?.headers,
+});
       return Promise.reject(err);
     }
 
     console.log("[apiClient] xx", {
-      message: err.message,
-      code,
-      status,
-      url,
-      data: (err.response as any)?.data,
-    });
+  message: err.message,
+  code,
+  status,
+  url,
+  data: JSON.stringify(err.response?.data, null, 2),
+  headers: err.response?.headers,
+});
 
     return Promise.reject(err);
   }
@@ -262,7 +284,7 @@ apiClient.interceptors.response.use(
 
 export default apiClient;
 
-/* ------------------------- Data-only helpers ------------------------- */
+/* ------------------------- data-only helpers ------------------------- */
 export const http = {
   request: <T = any>(config: AppAxiosRequestConfig) =>
     apiClient.request(config).then((r) => r.data as T),
@@ -288,7 +310,11 @@ export const http = {
       const promise = apiClient
         .get(url, { ...config, signal: controller.signal } as any)
         .then((r) => r.data as T);
-      return { promise, cancel: () => controller.abort() };
+
+      return {
+        promise,
+        cancel: () => controller.abort(),
+      };
     },
 
     post: <T = any>(url: string, data?: any, config: AppAxiosRequestConfig = {}) => {
@@ -296,7 +322,11 @@ export const http = {
       const promise = apiClient
         .post(url, data, { ...config, signal: controller.signal } as any)
         .then((r) => r.data as T);
-      return { promise, cancel: () => controller.abort() };
+
+      return {
+        promise,
+        cancel: () => controller.abort(),
+      };
     },
   },
 };

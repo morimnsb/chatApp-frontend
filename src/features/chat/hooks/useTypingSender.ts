@@ -1,9 +1,8 @@
 // chatApp-frontend/src/features/chat/hooks/useTypingSender.ts
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { getOrCreateEcho } from "@/shared/config/realtime";
-
-// اگر Node emitter داری، اینجا فعالش کن
 import { emitTypingIndicator } from "@/shared/ws/socketClient";
+
 type Payload = { roomId: number | string; isTyping: boolean };
 
 export default function useTypingSender({
@@ -16,15 +15,16 @@ export default function useTypingSender({
   currentUserId?: number | string | null;
 }) {
   const kind = String(effectiveKind || "").toLowerCase();
+
   const isReverb = kind === "reverb";
-  const isNode = kind === "node";
+  const isSocketIo = kind === "node" || kind === "django";
 
   const cfg = useMemo(
     () => ({
-      throttleMs: isNode ? 250 : 700,
-      stopDebounceMs: isNode ? 600 : 900,
+      throttleMs: isSocketIo ? 250 : 700,
+      stopDebounceMs: isSocketIo ? 600 : 900,
     }),
-    [isNode]
+    [isSocketIo]
   );
 
   const lastRef = useRef<{ rid: number; state: boolean; ts: number } | null>(null);
@@ -42,7 +42,6 @@ export default function useTypingSender({
     if (!echo) return false;
 
     try {
-      // ✅ must be same channel name you join in useRealtimeRouter
       echo.private(`chat.${rid}`).whisper("typing", {
         user_id: uid,
         userId: uid,
@@ -58,45 +57,40 @@ export default function useTypingSender({
   };
 
   const sendStop = (rid: number) => {
-    if (isNode) {
-      // emitTypingIndicator({ roomId: rid, isTyping: false });
-      return true;
+    if (isSocketIo) {
+      return emitTypingIndicator({ roomId: rid, isTyping: false });
     }
     if (isReverb) return whisperTyping(rid, false);
     return false;
   };
 
   const sendStart = (rid: number) => {
-    if (isNode) {
-      emitTypingIndicator({ roomId: rid, isTyping: true });
-      return true;
+    if (isSocketIo) {
+      return emitTypingIndicator({ roomId: rid, isTyping: true });
     }
     if (isReverb) return whisperTyping(rid, true);
     return false;
   };
 
-  // ✅ unmount => stop typing
   useEffect(() => {
     return () => {
       const rid = lastRidRef.current;
       if (rid) sendStop(rid);
       if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReverb, isNode]);
+  }, [isReverb, isSocketIo]);
 
   return useCallback(
     ({ roomId, isTyping }: Payload) => {
       const rid = Number(roomId);
       if (!rid) return false;
-      if (!isReverb && !isNode) return false;
+      if (!isReverb && !isSocketIo) return false;
 
       lastRidRef.current = rid;
 
       const now = Date.now();
       const last = lastRef.current;
 
-      // same state => refresh stop timer if typing
       if (last?.rid === rid && last.state === isTyping) {
         if (isTyping) {
           if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
@@ -109,7 +103,6 @@ export default function useTypingSender({
       }
 
       if (isTyping) {
-        // throttle start
         if (last?.rid === rid && last.state === true && now - last.ts < cfg.throttleMs) {
           if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
           stopTimerRef.current = setTimeout(() => {
@@ -127,16 +120,13 @@ export default function useTypingSender({
           sendStop(rid);
         }, cfg.stopDebounceMs);
 
-        sendStart(rid);
-        return true;
+        return sendStart(rid);
       }
 
-      // isTyping false
       lastRef.current = { rid, state: false, ts: now };
       if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
-      sendStop(rid);
-      return true;
+      return sendStop(rid);
     },
-    [isReverb, isNode, bareToken, currentUserId, cfg.throttleMs, cfg.stopDebounceMs]
+    [isReverb, isSocketIo, bareToken, currentUserId, cfg.throttleMs, cfg.stopDebounceMs]
   );
 }

@@ -181,28 +181,34 @@ export default function messageReducer(
     }
 
     case messageActionTypes.SET_TYPING_INDICATOR: {
-      const p = action.payload || {};
-      const userId = p.userId ?? p.user_id ?? null;
-      if (userId == null) return state;
+  const p = action.payload || {};
+  const userId = p.userId ?? p.user_id ?? null;
+  const roomId = p.roomId ?? p.room_id ?? null;
+  if (userId == null) return state;
 
-      return {
-        ...state,
-        typingIndicators: {
-          ...state.typingIndicators,
-          [String(userId)]: Boolean(p.isTyping ?? p.typing ?? true),
-        },
-      };
-    }
+  const key = roomId != null ? `${roomId}:${userId}` : String(userId);
+
+  return {
+    ...state,
+    typingIndicators: {
+      ...state.typingIndicators,
+      [key]: Boolean(p.isTyping ?? p.typing ?? true),
+    },
+  };
+}
 
     case messageActionTypes.RESET_TYPING_INDICATOR: {
-      const p = action.payload || {};
-      const userId = p.userId ?? p.user_id ?? p;
-      if (userId == null) return state;
+  const p = action.payload || {};
+  const userId = p.userId ?? p.user_id ?? p;
+  const roomId = p.roomId ?? p.room_id ?? null;
+  if (userId == null) return state;
 
-      const next = { ...state.typingIndicators };
-      delete next[String(userId)];
-      return { ...state, typingIndicators: next };
-    }
+  const key = roomId != null ? `${roomId}:${userId}` : String(userId);
+
+  const next = { ...state.typingIndicators };
+  delete next[key];
+  return { ...state, typingIndicators: next };
+}
 
     case messageActionTypes.UPDATE_MESSAGES: {
   const packet = action.payload || {};

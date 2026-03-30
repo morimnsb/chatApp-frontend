@@ -51,8 +51,8 @@ export type RoomLike = {
 
   unread_count?: number | null;
 
-  members?: any[] | null; // [{user:{...}}]
-  users?: any[] | null;   // [{id,...}] or [{user:{...}}]
+  members?: any[] | null;
+  users?: any[] | null;
   participants?: any[] | null;
 
   [k: string]: any;
@@ -94,6 +94,10 @@ export type UseChatListsResult = {
   typingIndicators: Record<string, boolean>;
   loading: boolean;
   error: string | null;
+
+  // ✅ helpers
+  isUserTypingInRoom: (roomId: Id | null | undefined, userId: Id | null | undefined) => boolean;
+  getTypingUserIdsForRoom: (roomId: Id | null | undefined) => string[];
 };
 
 const safeArr = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
@@ -142,16 +146,13 @@ function normalizeKind(r: any): "dm" | "group" | null {
   return null;
 }
 
-// ✅ always return [{id,name,email}] user objects
 function normalizeUsers(r: any): UserLike[] {
-  // 1) members: [{user:{...}}]
   if (Array.isArray(r?.members)) {
     return r.members
       .map((m: any) => m?.user ?? m)
       .filter((u: any) => u && u.id != null);
   }
 
-  // 2) users: [{id,...}] (Laravel conversations)
   if (Array.isArray(r?.users)) {
     return r.users
       .map((u: any) => u?.user ?? u)
@@ -174,6 +175,50 @@ function normalizeLastText(r: any): string {
   return (lm?.content ?? lm?.text ?? r?.last_message_text ?? "") as string;
 }
 
+function keyRoomUser(roomId: Id | null | undefined, userId: Id | null | undefined) {
+  if (roomId == null || userId == null) return null;
+  return `${String(roomId)}:${String(userId)}`;
+}
+
+export function isUserTypingInRoomRecord(
+  typingIndicators: Record<string, boolean> | undefined,
+  roomId: Id | null | undefined,
+  userId: Id | null | undefined
+) {
+  if (!typingIndicators || userId == null) return false;
+
+  const roomKey = keyRoomUser(roomId, userId);
+  if (roomKey && typingIndicators[roomKey]) return true;
+
+  // fallback for old non-room-aware keys
+  if (typingIndicators[String(userId)]) return true;
+
+  return false;
+}
+
+export function getTypingUserIdsForRoomRecord(
+  typingIndicators: Record<string, boolean> | undefined,
+  roomId: Id | null | undefined
+): string[] {
+  if (!typingIndicators || roomId == null) return [];
+
+  const rid = String(roomId);
+  const out = new Set<string>();
+
+  for (const [key, value] of Object.entries(typingIndicators)) {
+    if (!value) continue;
+
+    // new format: "roomId:userId"
+    if (key.startsWith(`${rid}:`)) {
+      const uid = key.slice(rid.length + 1);
+      if (uid) out.add(uid);
+      continue;
+    }
+  }
+
+  return Array.from(out);
+}
+
 export function useChatLists(
   {
     searchQuery = "",
@@ -188,7 +233,6 @@ export function useChatLists(
   const loading = useAppSelector((s) => Boolean((s as any)?.messages?.loadingStates?.messages));
   const error = useAppSelector((s) => (s as any)?.messages?.errorStates?.messages) || null;
 
-  // ✅ source of truth from redux (can be overridden by prop if provided)
   const currentUserIdRedux = useAppSelector(selectCurrentUserId);
   const currentUserId = (currentUserIdProp ?? currentUserIdRedux ?? null) as Id | null;
 
@@ -289,6 +333,18 @@ export function useChatLists(
     return { dmList: dms, groupList: groups };
   }, [roomsAll, q, currentUserId]);
 
+  const isUserTypingInRoom = useMemo(
+    () => (roomId: Id | null | undefined, userId: Id | null | undefined) =>
+      isUserTypingInRoomRecord(typingIndicators, roomId, userId),
+    [typingIndicators]
+  );
+
+  const getTypingUserIdsForRoom = useMemo(
+    () => (roomId: Id | null | undefined) =>
+      getTypingUserIdsForRoomRecord(typingIndicators, roomId),
+    [typingIndicators]
+  );
+
   useEffect(() => {
     if (!DEBUG) return;
 
@@ -298,10 +354,19 @@ export function useChatLists(
       groupCount: groupList.length,
       currentUserId,
       currentUserIdRedux,
+      typingKeys: Object.keys(typingIndicators || {}),
       dmSample: dmList.slice(0, 2).map((x) => ({ roomId: x.roomId, partnerId: x.partnerId })),
       groupSample: groupList.slice(0, 2).map((x) => ({ id: x.id, name: x.name, kind: x.kind })),
     });
-  }, [roomsAll, dmList, groupList, currentUserId, currentUserIdRedux]);
+  }, [roomsAll, dmList, groupList, currentUserId, currentUserIdRedux, typingIndicators]);
 
-  return { dmList, groupList, typingIndicators, loading, error };
+  return {
+    dmList,
+    groupList,
+    typingIndicators,
+    loading,
+    error,
+    isUserTypingInRoom,
+    getTypingUserIdsForRoom,
+  };
 }

@@ -1,9 +1,7 @@
-// chatApp-frontend\src\shared\components\ConversationList.tsx
+// chatApp-frontend/src/shared/components/ConversationList.tsx
 import React, { useMemo, useState, useCallback } from "react";
 import { ListGroup, Button, Spinner } from "react-bootstrap";
-import { useSelector, shallowEqual } from "react-redux";
 
-import type { RootState } from "@/app/store/store";
 import type { BackendKey } from "@/shared/backend";
 
 import Gate from "@/features/chat/components/Gate";
@@ -47,8 +45,11 @@ const clip = (s: unknown, n = 38) => {
   return !t ? "" : t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 
-const getLastText = (v: any) => (typeof v === "string" ? v : v?.content || v?.message || v?.text || "");
-const getRoomId = (c: any) => c?.roomId ?? c?.room_id ?? c?.chat_room_id ?? c?.id ?? null;
+const getLastText = (v: any) =>
+  typeof v === "string" ? v : v?.content || v?.message || v?.text || "";
+
+const getRoomId = (c: any) =>
+  c?.roomId ?? c?.room_id ?? c?.chat_room_id ?? c?.id ?? null;
 
 export default function ConversationList({
   filteredIndividualMessages,
@@ -64,38 +65,55 @@ export default function ConversationList({
   loading = false,
   error = null,
 }: Props) {
-  const { storeDM, storeGRP } = useSelector(
-    (state: RootState) => ({
-      storeDM: (state as any).messages?.individualMessages || [],
-      storeGRP: (state as any).messages?.groupMessages || [],
-    }),
-    shallowEqual
-  );
-
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
 
   const onlineSet = useMemo(() => {
     const s = new Set<string>();
-    safeArr<any>(onlineUsers).forEach((u) => u?.id != null && s.add(String(u.id)));
+    safeArr<any>(onlineUsers).forEach((u) => {
+      if (u?.id != null) s.add(String(u.id));
+    });
     return s;
   }, [onlineUsers]);
 
   const individualMessages = useMemo(() => {
-    const p = safeArr<any>(filteredIndividualMessages);
-    return p.length ? p : safeArr<any>(storeDM);
-  }, [filteredIndividualMessages, storeDM]);
+    const arr = safeArr<any>(filteredIndividualMessages);
+    log("individual props", {
+      count: arr.length,
+      rooms: arr.map((x) => getRoomId(x)),
+      lastTexts: arr.map((x) => ({
+        roomId: getRoomId(x),
+        last:
+          getLastText(x?.last_message_obj ?? x?.last_message ?? x?.lastMessage) ||
+          x?.last_message_text ||
+          "",
+      })),
+    });
+    return arr;
+  }, [filteredIndividualMessages]);
 
   const groupMessages = useMemo(() => {
-    const p = safeArr<any>(filteredGroupMessages);
-    return p.length ? p : safeArr<any>(storeGRP);
-  }, [filteredGroupMessages, storeGRP]);
+    const arr = safeArr<any>(filteredGroupMessages);
+    log("group props", {
+      count: arr.length,
+      rooms: arr.map((x) => getRoomId(x)),
+    });
+    return arr;
+  }, [filteredGroupMessages]);
 
-  const typing = useCallback((userId: any) => (typingIndicators?.[userId] ? "is typing..." : null), [typingIndicators]);
+  const typing = useCallback(
+    (userId: any) => {
+      if (!userId) return null;
+      return typingIndicators?.[userId] ? "is typing..." : null;
+    },
+    [typingIndicators]
+  );
 
   const handleCreateGroup = useCallback(async () => {
     setCreating(true);
-    setCreateError("Creating group is disabled here. Move it to HomeChat/useChatData and pass a handler prop.");
+    setCreateError(
+      "Creating group is disabled here. Move it to HomeChat/useChatData and pass a handler prop."
+    );
     log("create group blocked", { effectiveKind });
     setCreating(false);
   }, [effectiveKind]);
@@ -112,16 +130,23 @@ export default function ConversationList({
             const roomId = getRoomId(convo);
             const userId = convo?.partnerId ?? convo?.partner_id ?? convo?.user_id ?? null;
 
-            const lastMsgObj = convo?.last_message_obj ?? convo?.last_message ?? null;
+            const lastMsgObj =
+              convo?.last_message_obj ?? convo?.last_message ?? convo?.lastMessage ?? null;
             const lastMsgText = getLastText(lastMsgObj) || convo?.last_message_text || "";
 
             const lastTime =
               convo?.last_message_at ||
-              (typeof lastMsgObj === "object" ? lastMsgObj?.created_at || lastMsgObj?.timestamp : null) ||
+              (typeof lastMsgObj === "object"
+                ? lastMsgObj?.created_at || lastMsgObj?.timestamp
+                : null) ||
               null;
 
             const displayName =
-              convo?.first_name || convo?.firstName || convo?.name || convo?.email || `User #${userId ?? "?"}`;
+              convo?.first_name ||
+              convo?.firstName ||
+              convo?.name ||
+              convo?.email ||
+              `User #${userId ?? "?"}`;
 
             const avatar = convo?.photo || convo?.avatar || profilephoto1;
             const isActive = Number(selectedRoom) === Number(roomId);
@@ -132,7 +157,8 @@ export default function ConversationList({
             const incoming = friendshipStatus === "pending_incoming";
             const outgoing = friendshipStatus === "pending_outgoing";
 
-            const isSelf = currentUser?.id && userId != null && Number(currentUser.id) === Number(userId);
+            const isSelf =
+              currentUser?.id && userId != null && Number(currentUser.id) === Number(userId);
 
             const subtitle = incoming
               ? "sent you a friend request"
@@ -144,7 +170,10 @@ export default function ConversationList({
             const isOnline = userId != null ? onlineSet.has(String(userId)) : false;
 
             return (
-              <ListGroup.Item key={`dm-${roomId || userId}`} className={`message-list-item p-0 ${isActive ? "active" : ""}`}>
+              <ListGroup.Item
+                key={`dm-${roomId || userId}`}
+                className={`message-list-item p-0 ${isActive ? "active" : ""}`}
+              >
                 <div
                   role="button"
                   tabIndex={0}
@@ -212,8 +241,9 @@ export default function ConversationList({
                       ) : (
                         <>
                           <span className="subtext">{typing(userId) || subtitle}</span>
-
-                          {Number(convo?.unread_count || 0) > 0 && <span className="unread_count">{convo.unread_count}</span>}
+                          {Number(convo?.unread_count || 0) > 0 && (
+                            <span className="unread_count">{convo.unread_count}</span>
+                          )}
                         </>
                       )}
                     </div>
@@ -223,7 +253,9 @@ export default function ConversationList({
             );
           })
         ) : (
-          <ListGroup.Item className="no-messages">No individual messages available</ListGroup.Item>
+          <ListGroup.Item className="no-messages">
+            No individual messages available
+          </ListGroup.Item>
         )}
 
         <ListGroup.Item className="list-group-header group-header-row">
@@ -235,11 +267,12 @@ export default function ConversationList({
             className="new-group-btn"
             onClick={handleCreateGroup}
             disabled={creating}
-            title="Move create-group logic to HomeChat and pass a handler prop"
+            title="Move create-group logic to HomeChat/useChatData and pass a handler prop"
           >
             {creating ? (
               <>
-                <Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" /> Creating...
+                <Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" />{" "}
+                Creating...
               </>
             ) : (
               "+ New Group"
@@ -255,12 +288,14 @@ export default function ConversationList({
 
         {groupMessages.length ? (
           groupMessages.map((room: any) => {
-            const roomId = room?.id ?? null;
+            const roomId = room?.id ?? room?.room_id ?? room?.roomId ?? null;
 
-            const lastMsgObj = room?.last_message_obj ?? room?.last_message ?? null;
+            const lastMsgObj =
+              room?.last_message_obj ?? room?.last_message ?? room?.lastMessage ?? null;
             const lastMsgText = getLastText(lastMsgObj) || room?.last_message_text || "";
 
-            const lastTime = room?.last_message_at || lastMsgObj?.created_at || lastMsgObj?.timestamp || null;
+            const lastTime =
+              room?.last_message_at || lastMsgObj?.created_at || lastMsgObj?.timestamp || null;
 
             const name = room?.name || room?.title || room?.room_name || `Room #${roomId}`;
             const isActive = Number(selectedRoom) === Number(roomId);
@@ -268,7 +303,10 @@ export default function ConversationList({
             const inlinePreview = clip(lastMsgText, 28);
 
             return (
-              <ListGroup.Item key={`group-${roomId}`} className={`message-list-item p-0 ${isActive ? "active" : ""}`}>
+              <ListGroup.Item
+                key={`group-${roomId}`}
+                className={`message-list-item p-0 ${isActive ? "active" : ""}`}
+              >
                 <div
                   role="button"
                   tabIndex={0}
@@ -279,7 +317,11 @@ export default function ConversationList({
                 >
                   <div className="message-content">
                     <div className="avatar-ring ring-group">
-                      <img src={room?.photo || profilephoto1} alt={name} className="profile-img" />
+                      <img
+                        src={room?.photo || profilephoto1}
+                        alt={name}
+                        className="profile-img"
+                      />
                     </div>
                   </div>
 
@@ -299,8 +341,9 @@ export default function ConversationList({
 
                     <div className="message-details">
                       <span className="subtext">{clip(lastMsgText, 60)}</span>
-
-                      {Number(room?.unread_count || 0) > 0 && <span className="unread_count">{room.unread_count}</span>}
+                      {Number(room?.unread_count || 0) > 0 && (
+                        <span className="unread_count">{room.unread_count}</span>
+                      )}
                     </div>
                   </div>
                 </div>

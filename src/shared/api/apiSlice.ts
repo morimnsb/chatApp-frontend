@@ -1,5 +1,4 @@
-//chatApp-frontend\src\shared\api\apiSlice.ts
-// src/shared/api/apiSlice.ts
+// chatApp-frontend/src/shared/api/apiSlice.ts
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import type {
   BaseQueryFn,
@@ -7,9 +6,15 @@ import type {
   FetchBaseQueryError,
 } from "@reduxjs/toolkit/query";
 import type { RootState } from "@/app/store/store";
-import { getBackend, resolveApiBase, buildEndpoints } from "@/shared/backend";
+import {
+  getBackend,
+  resolveApiBase,
+  buildEndpoints,
+  type BackendConfig,
+} from "@/shared/backend";
 
-const stripBearer = (t: unknown) => String(t || "").replace(/^Bearer\s+/i, "").trim();
+const stripBearer = (t: unknown) =>
+  String(t || "").replace(/^Bearer\s+/i, "").trim();
 
 const getLS = (k: string) => {
   try {
@@ -25,35 +30,53 @@ type DynamicBaseQuery = BaseQueryFn<
   FetchBaseQueryError
 >;
 
+function getActiveBackend(): BackendConfig {
+  return getBackend();
+}
+
+function getBaseUrl(): string {
+  return resolveApiBase(getActiveBackend());
+}
+
+function getEndpoints() {
+  return buildEndpoints(getActiveBackend());
+}
+
 const dynamicBaseQuery: DynamicBaseQuery = async (args, api, extraOptions) => {
-  const backend = getBackend();              // ✅ backend object
-  const baseUrl = resolveApiBase(backend);   // ✅ base url
+  const backend = getActiveBackend();
+  const baseUrl = resolveApiBase(backend);
 
   const baseQuery = fetchBaseQuery({
     baseUrl,
-    prepareHeaders: (headers, { getState }) => {
+    credentials: backend.key === "reverb" ? "include" : "omit",
+    prepareHeaders: (headers, { getState, endpoint, type }) => {
       const state = getState?.() as RootState | undefined;
 
       const tokenFromRedux = state?.auth?.access_token;
       const tokenFromLS = getLS("access_token");
       const token = stripBearer(tokenFromRedux || tokenFromLS);
 
-      if (token) headers.set("Authorization", `Bearer ${token}`);
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+
       headers.set("Accept", "application/json");
-      headers.set("Content-Type", "application/json");
+
+      // فقط وقتی لازم است Content-Type را ست کن
+      // fetchBaseQuery برای body JSON خودش هم خوب هندل می‌کند،
+      // ولی برای سازگاری بیشتر نگهش می‌داریم.
+      if (!headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
+
       return headers;
     },
-
-    // ✅ برای reverb/laravel شاید credentials لازم باشه
-    credentials: backend.key === "reverb" ? "include" : "omit",
   });
 
   return baseQuery(args, api, extraOptions);
 };
 
 /* -------------------- minimal API types -------------------- */
-// اگر خواستی بعداً دقیق‌ترش کنیم، اینجا بهترین نقطه‌ست.
-
 export type ApiUser = {
   id: number | string;
   name?: string | null;
@@ -73,8 +96,11 @@ export type ApiRoom = {
 export type ApiMessage = {
   id?: number | string;
   chat_room_id?: RoomId;
+  room_id?: RoomId;
   user_id?: number | string;
+  sender_id?: number | string;
   content?: string | null;
+  text?: string | null;
   created_at?: string | null;
   [k: string]: any;
 };
@@ -85,52 +111,46 @@ export const apiSlice = createApi({
   tagTypes: ["Me", "Users", "Rooms", "Messages", "Friends", "Convos"],
   endpoints: (builder) => ({
     getMe: builder.query<ApiUser, void>({
-      query: () => buildEndpoints(getBackend()).me,
+      query: () => getEndpoints().me,
       providesTags: ["Me"],
     }),
 
     getUsers: builder.query<ApiUser[], void>({
-      query: () => buildEndpoints(getBackend()).users,
+      query: () => getEndpoints().users,
       providesTags: ["Users"],
     }),
 
     getRooms: builder.query<ApiRoom[], void>({
-      query: () => buildEndpoints(getBackend()).rooms,
+      query: () => getEndpoints().rooms,
       providesTags: ["Rooms"],
     }),
 
-    // conversations shape تو پروژه‌ت ممکنه متفاوت باشه → any[] فعلاً امن‌تره
     getConversations: builder.query<any[], void>({
-      query: () => buildEndpoints(getBackend()).convos,
+      query: () => getEndpoints().convos,
       providesTags: ["Convos"],
     }),
 
     getRoomMessages: builder.query<ApiMessage[], RoomId>({
-      query: (roomId) => buildEndpoints(getBackend()).roomMessages(roomId),
+      query: (roomId) => getEndpoints().roomMessages(roomId),
       providesTags: (_res, _err, roomId) => [{ type: "Messages", id: roomId }],
     }),
 
-    sendMessage: builder.mutation<
-      ApiMessage,
-      { roomId: RoomId; content: string }
-    >({
+    sendMessage: builder.mutation<ApiMessage, { roomId: RoomId; content: string }>({
       query: ({ roomId, content }) => ({
-        url: buildEndpoints(getBackend()).roomMessages(roomId),
+        url: getEndpoints().roomMessages(roomId),
         method: "POST",
         body: { content },
       }),
       invalidatesTags: (_res, _err, { roomId }) => [
         { type: "Messages", id: roomId },
         "Rooms",
+        "Convos",
       ],
     }),
 
-    sendFriendRequest: builder.mutation<
-      any,
-      { to_user_id: number | string }
-    >({
+    sendFriendRequest: builder.mutation<any, { to_user_id: number | string }>({
       query: ({ to_user_id }) => ({
-        url: buildEndpoints(getBackend()).friend,
+        url: getEndpoints().friend,
         method: "POST",
         body: { to_user_id },
       }),
@@ -142,7 +162,7 @@ export const apiSlice = createApi({
       { friendship_id: number | string; action: string }
     >({
       query: ({ friendship_id, action }) => ({
-        url: buildEndpoints(getBackend()).friendRespond,
+        url: getEndpoints().friendRespond,
         method: "POST",
         body: { friendship_id, action },
       }),
@@ -161,3 +181,6 @@ export const {
   useSendFriendRequestMutation,
   useRespondFriendRequestMutation,
 } = apiSlice;
+
+/* -------------------- optional debug helpers -------------------- */
+export { getActiveBackend, getBaseUrl, getEndpoints };

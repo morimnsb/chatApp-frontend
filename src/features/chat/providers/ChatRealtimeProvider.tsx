@@ -3,6 +3,7 @@ import React, {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   type ReactNode,
@@ -17,11 +18,16 @@ import {
   selectCurrentUserId,
 } from "@/app/store/authSlice";
 
+import {
+  connectSocketIfAuthed,
+  disconnectSocket,
+  refreshSocketAuth,
+} from "@/shared/ws/socketClient";
+
 /** ---------------- Types ---------------- */
 
 type EffectiveKind = string | null | undefined;
 
-// اگر payload/meta رو دقیق‌تر داری (مثلاً پیام/typing/presence)، بعداً این‌ها رو دقیق می‌کنیم.
 export type RealtimeMeta = Record<string, unknown> | undefined;
 export type RealtimePayload = unknown;
 
@@ -55,18 +61,22 @@ export default function ChatRealtimeProvider({ effectiveKind, children }: Props)
   const token = useSelector(selectToken);
   const currentUserId = useSelector(selectCurrentUserId);
 
-  const selectedRoomId = useSelector((s: any) => s.messages?.selectedRoom?.id ?? s.messages?.selectedRoom ?? null);
+  const selectedRoomId = useSelector(
+    (s: any) => s.messages?.selectedRoom?.id ?? s.messages?.selectedRoom ?? null
+  );
+
+  const kind = String(effectiveKind || "").trim().toLowerCase();
 
   const shouldEnable = Boolean(
     bootstrapped &&
       token &&
       currentUserId &&
-      String(effectiveKind || "").trim().length > 0
+      kind.length > 0 &&
+      kind !== "none"
   );
 
   const globalNotify = useGlobalNotify({ selectedRoom: selectedRoomId });
 
-  // ✅ HomeChat will register here
   const handlerRef = useRef<NotifyHandler | null>(null);
 
   const registerHandler = useCallback((fn: NotifyHandler) => {
@@ -78,13 +88,31 @@ export default function ChatRealtimeProvider({ effectiveKind, children }: Props)
 
   const onNotify = useCallback<NotifyHandler>(
     (payload, meta) => {
-      // 1) route to HomeChat (messages/typing)
       handlerRef.current?.(payload, meta);
-      // 2) also do global toast/badge logic
       globalNotify?.(payload, meta);
     },
     [globalNotify]
   );
+
+  // connect socket/ws for node + django
+  useEffect(() => {
+    if (!shouldEnable) {
+      disconnectSocket("provider_disabled");
+      return;
+    }
+
+    connectSocketIfAuthed("ChatRealtimeProvider.mount");
+
+    return () => {
+      disconnectSocket("ChatRealtimeProvider.cleanup");
+    };
+  }, [shouldEnable, kind]);
+
+  // reconnect on token changes
+  useEffect(() => {
+    if (!shouldEnable || !token) return;
+    refreshSocketAuth("ChatRealtimeProvider.token_changed");
+  }, [token, shouldEnable]);
 
   useUserEvents({
     effectiveKind,

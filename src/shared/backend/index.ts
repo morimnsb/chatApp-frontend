@@ -33,12 +33,17 @@ export type BackendConfig = {
   paths: BackendPaths;
 };
 
+const normalizeKey = (v: unknown): BackendKey | "" => {
+  const k = String(v ?? "").trim().toLowerCase();
+  return (BACKENDS as readonly string[]).includes(k) ? (k as BackendKey) : "";
+};
+
 export const BACKEND_REGISTRY: Record<BackendKey, BackendConfig> = {
   reverb: {
     key: "reverb",
     label: "Laravel + Reverb",
     apiBaseEnvKeys: ["VITE_API_BASE_REVERB", "VITE_API_URL"],
-    defaultApiBase: "http://localhost:8000/api",
+    defaultApiBase: "http://127.0.0.1:8000/api",
     ws: { kind: "reverb" },
     paths: {
       health: "/health",
@@ -59,7 +64,7 @@ export const BACKEND_REGISTRY: Record<BackendKey, BackendConfig> = {
     key: "node",
     label: "Node.js + Socket.IO",
     apiBaseEnvKeys: ["VITE_API_BASE_NODE", "VITE_API_URL"],
-    defaultApiBase: "http://localhost:3000/api",
+    defaultApiBase: "http://127.0.0.1:3000/api",
     ws: { kind: "socketio" },
     paths: {
       health: "/health",
@@ -77,50 +82,50 @@ export const BACKEND_REGISTRY: Record<BackendKey, BackendConfig> = {
   },
 
   django: {
-    key: "django",
-    label: "Django (REST)",
-    apiBaseEnvKeys: ["VITE_API_BASE_DJANGO", "VITE_API_URL"],
-    defaultApiBase: "http://localhost:8001/api",
-    ws: { kind: "none" },
-    paths: {
-      health: "/health/",
-      login: "/auth/login/",
-      logout: "/auth/logout/",
-      me: "/auth/me/",
+  key: "django",
+  label: "Django (REST + Socket.IO)",
+  apiBaseEnvKeys: ["VITE_API_BASE_DJANGO", "VITE_API_URL"],
+  defaultApiBase: "http://localhost:8000/api",
+  ws: { kind: "socketio" },
+  paths: {
+    health: "/health",
+    login: "/auth/login",
+    logout: "/auth/logout",
+    me: "/auth/me",
 
-      convos: "/chat/conversations/",
-      rooms: "/chat/rooms/",
-      roomMessages: (roomId) => `/chat/rooms/${roomId}/messages/`,
-      users: "/users/",
-      friend: "/chat/friendship/",
-      friendRespond: "/chat/friendship/respond/",
-    },
+    convos: "/chat/conversations/",
+    rooms: "/chat/conversations/",
+    roomMessages: (roomId) => `/chat/messages/${roomId}/`,
+    users: "/auth/users",
+
+    friend: "/chat/friendship",
+    friendRespond: "/chat/friendship/respond",
   },
+},
 };
 
-// ✅ key chosen by user (localStorage)
+// key chosen by user (localStorage)
 export function getChosenBackendKey(): BackendKey | null {
   try {
     const savedRaw = localStorage.getItem(BACKEND_KEY);
-    const saved = String(savedRaw || "").trim().toLowerCase();
-    return (BACKENDS as readonly string[]).includes(saved)
-      ? (saved as BackendKey)
-      : null;
+    const saved = normalizeKey(savedRaw);
+    return saved || null;
   } catch {
     return null;
   }
 }
 
-// ✅ backend object (fallback to reverb if nothing)
+// backend object
 export function getBackend(keyOverride?: BackendKey | string | null): BackendConfig {
-  const key = (normalizeKey(keyOverride) ||
+  const key =
+    normalizeKey(keyOverride) ||
     normalizeKey(getChosenBackendKey()) ||
-    "reverb") as BackendKey;
+    "reverb";
 
-  return BACKEND_REGISTRY[key] || BACKEND_REGISTRY.reverb;
+  return BACKEND_REGISTRY[key];
 }
 
-// ✅ API base from env or default
+// API base from env or default
 export function resolveApiBase(backend?: BackendKey | BackendConfig | null): string {
   const b: BackendConfig =
     typeof backend === "string" ? getBackend(backend) : backend || getBackend();
@@ -128,26 +133,25 @@ export function resolveApiBase(backend?: BackendKey | BackendConfig | null): str
   const keys = Array.isArray(b.apiBaseEnvKeys) ? b.apiBaseEnvKeys : [];
 
   for (const k of keys) {
-    // import.meta.env در Vite به صورت Record<string, any> هست
-    const v = (import.meta.env as any)[k];
-    if (v) return String(v).replace(/\/$/, "");
+    const v = (import.meta.env as Record<string, unknown>)[k];
+    if (v != null && String(v).trim()) {
+      return String(v).replace(/\/$/, "");
+    }
   }
 
-  return String(b.defaultApiBase || (import.meta.env as any).VITE_API_URL || "").replace(
-    /\/$/,
-    ""
-  );
+  return String(b.defaultApiBase || "").replace(/\/$/, "");
 }
 
-// ✅ endpoints = paths (normalized)
+// endpoints = paths
 export function buildEndpoints(backend?: BackendKey | BackendConfig | null): BackendPaths {
-  const b = backend
-    ? typeof backend === "string"
-      ? getBackend(backend)
-      : backend
-    : getBackend();
+  const b =
+    backend
+      ? typeof backend === "string"
+        ? getBackend(backend)
+        : backend
+      : getBackend();
 
-  const paths = b?.paths;
+  const paths = b.paths;
 
   const pick = <K extends keyof BackendPaths>(key: K, fallback: BackendPaths[K]) =>
     (paths?.[key] ?? fallback) as BackendPaths[K];
@@ -160,7 +164,7 @@ export function buildEndpoints(backend?: BackendKey | BackendConfig | null): Bac
 
     convos: pick("convos", "/chat/conversations"),
     rooms: pick("rooms", "/chat/rooms"),
-    users: pick("users", "/users"),
+    users: pick("users", "/auth/users"),
 
     friend: pick("friend", "/chat/friendship"),
     friendRespond: pick("friendRespond", "/chat/friendship/respond"),
@@ -172,30 +176,25 @@ export function buildEndpoints(backend?: BackendKey | BackendConfig | null): Bac
   };
 }
 
-// --- backwards compatibility ---
-// بعضی فایل‌ها هنوز getChosenBackend رو import می‌کنن
+// backwards compatibility
 export function getChosenBackend(): BackendConfig {
-  return getBackend(); // backend object
+  return getBackend();
 }
 
-// --- backwards compatibility (old code imports) ---
 export function setChosenBackendNoReload(key: BackendKey | string | null | undefined): void {
   try {
-    if (key) localStorage.setItem(BACKEND_KEY, String(key));
-    else localStorage.removeItem(BACKEND_KEY);
+    const normalized = normalizeKey(key);
+    if (normalized) {
+      localStorage.setItem(BACKEND_KEY, normalized);
+    } else {
+      localStorage.removeItem(BACKEND_KEY);
+    }
   } catch {}
 }
 
 export function setChosenBackend(key: BackendKey | string | null | undefined): void {
   setChosenBackendNoReload(key);
 }
-
-/* ----------------------------- hook helper ----------------------------- */
-
-const normalizeKey = (v: unknown): BackendKey | "" => {
-  const k = String(v ?? "").trim().toLowerCase();
-  return (BACKENDS as readonly string[]).includes(k) ? (k as BackendKey) : "";
-};
 
 export function useBackendChoice() {
   const [backendChoice, setBackendChoice] = useState<BackendKey | "">(() => {
@@ -206,31 +205,38 @@ export function useBackendChoice() {
     }
   });
 
-  // keep in sync if another tab changes it
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key === BACKEND_KEY) setBackendChoice(normalizeKey(e.newValue));
+      if (e.key === BACKEND_KEY) {
+        setBackendChoice(normalizeKey(e.newValue));
+      }
     };
+
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const handleChangeBackend = useCallback((nextKey: unknown) => {
-    const nk = (normalizeKey(nextKey) || "reverb") as BackendKey; // ✅ default
+    const nk = (normalizeKey(nextKey) || "reverb") as BackendKey;
+
     try {
       localStorage.setItem(BACKEND_KEY, nk);
     } catch {}
+
     setBackendChoice(nk);
   }, []);
 
   const effectiveKind = useMemo<BackendKey>(() => {
-    const k = normalizeKey(backendChoice);
-    return (k || normalizeKey(getChosenBackendKey()) || "reverb") as BackendKey;
+    return (
+      normalizeKey(backendChoice) ||
+      normalizeKey(getChosenBackendKey()) ||
+      "reverb"
+    ) as BackendKey;
   }, [backendChoice]);
 
   return {
-    backendChoice,        // for UI picker value
-    effectiveKind,        // for logic (HomeChat / realtime)
-    handleChangeBackend,  // function expected by LoginForm
+    backendChoice,
+    effectiveKind,
+    handleChangeBackend,
   } as const;
 }

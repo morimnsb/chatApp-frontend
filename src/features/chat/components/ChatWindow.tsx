@@ -1,17 +1,22 @@
-// chatApp-frontend\src\features\chat\components\ChatWindow.tsx
+// chatApp-frontend/src/features/chat/components/ChatWindow.tsx
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Form, Button, Spinner, Alert } from "react-bootstrap";
 import { jwtDecode } from "jwt-decode";
 import { toast } from "react-toastify";
 
 import apiClient, { http } from "@/shared/api/apiClient";
-import { resetTypingIndicator, updateMessages } from "@/features/chat/state/messageActions";
+import {
+  resetTypingIndicator,
+  updateMessages,
+  setTypingIndicator,
+} from "@/features/chat/state/messageActions";
 
 import ChatMessagesList, { type ChatMessage } from "@/features/chat/components/ChatMessagesList";
 import TypingIndicator from "@/features/chat/components/TypingIndicator";
 
 import { useAutoScroll } from "@/features/chat/hooks/useAutoScroll";
 import { useDocTitleBadge } from "@/features/chat/hooks/useDocTitleBadge";
+import { useChatLists } from "@/features/chat/hooks/useChatLists";
 
 import { useAppDispatch, useAppSelector } from "@/app/store/hooks";
 import { selectCurrentUserId } from "@/app/store/authSlice";
@@ -120,7 +125,6 @@ export default function ChatWindow({
   const [msgs, setMsgs] = useState<NormalizedMsg[]>([]);
   const [txt, setTxt] = useState("");
   const [uiErr, setUiErr] = useState<string | null>(null);
-  const [typingUid, setTypingUid] = useState<number | string | null>(null);
   const [me, setMe] = useState<number | null>(toNum(uidFromStore));
   const [loading, setLoading] = useState(false);
 
@@ -130,11 +134,52 @@ export default function ChatWindow({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const wasTypingRef = useRef(false);
-
+const lastTypingSentAtRef = useRef(0);
+const typingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { bump } = useDocTitleBadge();
   const { containerRef, notifyNewMessage, scrollToBottom, showNewBadge, newCount } =
     useAutoScroll({ enabled: true, bottomThresholdPx: 140 });
+const typingIndicators =
+  useAppSelector((s) => (s as any)?.messages?.typingIndicators) || {};
+  // ✅ room-aware typing from redux
+    const typingUserIds = useMemo(() => {
+    if (!rid) return [];
 
+    const ridStr = String(rid);
+    const myId = me == null ? null : String(me);
+
+    const out = new Set<string>();
+
+    for (const [key, value] of Object.entries(typingIndicators || {})) {
+      if (!value) continue;
+
+      // new format: "roomId:userId"
+      if (key.startsWith(`${ridStr}:`)) {
+        const uid = key.slice(ridStr.length + 1);
+        if (uid && uid !== myId) out.add(uid);
+        continue;
+      }
+
+      // fallback old format: "userId"
+      if (myId == null || key !== myId) {
+        // این fallback فقط وقتی room-aware key نداریم کمک می‌کند
+        if (!key.includes(":")) out.add(key);
+      }
+    }
+
+    return Array.from(out);
+  }, [typingIndicators, rid, me]);
+
+  const hasTyping = typingUserIds.length > 0;
+  useEffect(() => {
+    console.log("[ChatWindow] typing snapshot", {
+      rid,
+      me,
+      typingIndicators,
+      typingUserIds,
+      hasTyping,
+    });
+  }, [rid, me, typingIndicators, typingUserIds, hasTyping]);
   const showDeskNotif = useCallback((title: string, body: string) => {
     if (!("Notification" in window)) return;
     if (Notification.permission !== "granted") return;
@@ -185,7 +230,6 @@ export default function ChatWindow({
     setMsgs([]);
     setTxt("");
     setUiErr(null);
-    setTypingUid(null);
     seen.current = new Set();
     wasTypingRef.current = false;
 
@@ -267,23 +311,52 @@ export default function ChatWindow({
       if (type === "typing_indicator" || type === "typing") {
         const uid = p.user_id ?? p.userId ?? p.sender_id ?? null;
         const pr = toNum(p.room_id ?? p.roomId ?? p.chat_room_id ?? null);
+
         if (rid && pr && pr !== rid) return;
         if (!uid) return;
 
-        if (!p.isTyping) {
+        // ✅ self typing ignore
+        if (me && Number(uid) === Number(me)) return;
+
+        const isTyping = Boolean(p.isTyping);
+        console.log(TAG, "typing event", { rid, pr, uid, isTyping, packet: p });
+
+        if (!isTyping) {
           if (typingT.current) clearTimeout(typingT.current);
           typingT.current = null;
-          dispatch(resetTypingIndicator(uid));
-          return void setTypingUid(null);
+
+          dispatch(
+            resetTypingIndicator({
+              userId: uid,
+              roomId: pr ?? rid,
+            } as any)
+          );
+          return;
         }
 
+        dispatch(
+          setTypingIndicator({
+            userId: uid,
+            user_id: uid,
+            roomId: pr ?? rid,
+            room_id: pr ?? rid,
+            isTyping: true,
+            at: p.at ?? Date.now(),
+          } as any)
+        );
+
         if (typingT.current) clearTimeout(typingT.current);
-        setTypingUid(uid);
         typingT.current = setTimeout(() => {
-          dispatch(resetTypingIndicator(uid));
-          setTypingUid(null);
+          dispatch(
+            resetTypingIndicator({
+              userId: uid,
+              roomId: pr ?? rid,
+            } as any)
+          );
           typingT.current = null;
         }, 3500);
+
+        return;
       }
     },
     [dispatch, me, rid, notifyNewMessage, showDeskNotif, bump]
@@ -305,7 +378,34 @@ export default function ChatWindow({
 
   /* send */
   const ready = Boolean(rid) && Boolean(me) && tsProp === "connected";
+const emitTypingTrue = useCallback(() => {
+  if (!me || !rid || tsProp !== "connected") return false;
 
+  const now = Date.now();
+  if (now - lastTypingSentAtRef.current < 1200) return false;
+
+  lastTypingSentAtRef.current = now;
+
+  const ok = Boolean(sendTyping?.({ roomId: rid, isTyping: true }));
+  console.log(TAG, "emitTypingTrue", { rid, me, ok });
+  return ok;
+}, [me, rid, tsProp, sendTyping]);
+
+const emitTypingFalse = useCallback(() => {
+  if (!rid || tsProp !== "connected") return false;
+
+  wasTypingRef.current = false;
+  lastTypingSentAtRef.current = 0;
+
+  if (typingStopTimerRef.current) {
+    clearTimeout(typingStopTimerRef.current);
+    typingStopTimerRef.current = null;
+  }
+
+  const ok = Boolean(sendTyping?.({ roomId: rid, isTyping: false }));
+  console.log(TAG, "emitTypingFalse", { rid, me, ok });
+  return ok;
+}, [rid, tsProp, sendTyping, me]);
   const send = useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
@@ -316,9 +416,8 @@ export default function ChatWindow({
       if (!text) return setUiErr("Message cannot be empty");
 
       if (rid && wasTypingRef.current) {
-        wasTypingRef.current = false;
-        sendTyping?.({ roomId: rid, isTyping: false });
-      }
+  emitTypingFalse();
+}
 
       try {
         if (!url) throw new Error("sendUrl missing");
@@ -354,20 +453,35 @@ export default function ChatWindow({
   );
 
   const onChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const v = e.target.value;
-      setTxt(v);
+  (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value;
+    setTxt(v);
 
-      if (!me || !rid || tsProp !== "connected") return;
+    if (!me || !rid || tsProp !== "connected") return;
 
-      const typing = Boolean(v.trim());
-      if (wasTypingRef.current === typing) return;
-      wasTypingRef.current = typing;
+    const hasText = Boolean(v.trim());
 
-      sendTyping?.({ roomId: rid, isTyping: typing });
-    },
-    [me, rid, tsProp, sendTyping]
-  );
+    if (!hasText) {
+      emitTypingFalse();
+      return;
+    }
+
+    wasTypingRef.current = true;
+
+    // ✅ حتی اگر اولین true گم شد، دوباره ارسال می‌شود
+    emitTypingTrue();
+
+    // ✅ اگر کاربر چند لحظه ساکت شد، false بفرست
+    if (typingStopTimerRef.current) {
+      clearTimeout(typingStopTimerRef.current);
+    }
+
+    typingStopTimerRef.current = setTimeout(() => {
+      emitTypingFalse();
+    }, 1800);
+  },
+  [me, rid, tsProp, emitTypingTrue, emitTypingFalse]
+);
 
   if (!rid) return <Placeholder />;
   if (!me) return <div>Loading user...</div>;
@@ -397,7 +511,10 @@ export default function ChatWindow({
           )}
         </div>
 
-        <TypingIndicator typing={typingUid} />
+        <TypingIndicator
+          typing={hasTyping}
+          text={typingUserIds.length > 1 ? "Users are typing..." : "User is typing..."}
+        />
 
         <Form onSubmit={send} className="chat-input-form">
           <Form.Group controlId="messageInput">
@@ -409,11 +526,10 @@ export default function ChatWindow({
               onChange={onChange}
               disabled={!ready}
               onBlur={() => {
-                if (!rid || tsProp !== "connected") return;
-                if (!wasTypingRef.current) return;
-                wasTypingRef.current = false;
-                sendTyping?.({ roomId: rid, isTyping: false });
-              }}
+  if (!rid || tsProp !== "connected") return;
+  if (!wasTypingRef.current) return;
+  emitTypingFalse();
+}}
             />
           </Form.Group>
 

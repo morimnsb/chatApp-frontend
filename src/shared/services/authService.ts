@@ -68,7 +68,7 @@ export async function listUsersApi<T = ApiResponse>(): Promise<T> {
 }
 
 export async function resendVerifyApi<T = ApiResponse>(payload: ResendVerifyPayload): Promise<T> {
-  return http.post<T>("/auth/resend-verify", payload, { hasAuth: false });
+  return http.post<T>("/auth/resend-verify-code", payload, { hasAuth: false });
 }
 
 /* ---------------------- password-related exports ---------------------- */

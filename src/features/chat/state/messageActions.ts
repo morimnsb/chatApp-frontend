@@ -42,7 +42,7 @@ export type UpdateMessagesAction = Action<typeof messageActionTypes.UPDATE_MESSA
 export type UpdateStatusAction = Action<typeof messageActionTypes.UPDATE_STATUS, UpdateStatusPayload>;
 export type ResetTypingIndicatorAction = Action<
   typeof messageActionTypes.RESET_TYPING_INDICATOR,
-  { userId: Id } | { user_id: Id }
+  { userId?: Id; user_id?: Id; roomId?: Id; room_id?: Id } | Id
 >;
 export type ClearUnreadCountAction = Action<typeof messageActionTypes.CLEAR_UNREAD_COUNT, Id>;
 
@@ -103,10 +103,21 @@ export const updateStatus = (senderId: Id, status: boolean): UpdateStatusAction 
   payload: { senderId, status },
 });
 
-export const resetTypingIndicator = (userId: Id): ResetTypingIndicatorAction => ({
-  type: messageActionTypes.RESET_TYPING_INDICATOR,
-  payload: { userId },
-});
+export const resetTypingIndicator = (
+  payload: Id | { userId?: Id; user_id?: Id; roomId?: Id; room_id?: Id }
+): ResetTypingIndicatorAction => {
+  if (payload != null && typeof payload === "object") {
+    return {
+      type: messageActionTypes.RESET_TYPING_INDICATOR,
+      payload,
+    };
+  }
+
+  return {
+    type: messageActionTypes.RESET_TYPING_INDICATOR,
+    payload: { userId: payload as Id },
+  };
+};
 
 export const clearUnreadCount = (conversationId: Id): ClearUnreadCountAction => ({
   type: messageActionTypes.CLEAR_UNREAD_COUNT,

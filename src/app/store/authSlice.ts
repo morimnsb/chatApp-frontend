@@ -32,10 +32,7 @@ type AuthPayload = {
   user?: UserLike | null;
 };
 
-// login creds: حداقلی بگیر، چون ممکنه username/email/phone باشد
 export type LoginCredentials = Record<string, any>;
-
-// برای rejectWithValue
 type RejectValue = string;
 
 /* -------------------- helpers -------------------- */
@@ -91,7 +88,6 @@ function clearAuthStorage(): void {
   saveAuthToStorage({ access_token: null, refreshToken: null, expiresAt: null });
 }
 
-// ✅ unwrap user from any backend shape
 export function extractUser(data: unknown): UserLike | null {
   if (!data || typeof data !== "object") return null;
 
@@ -126,6 +122,13 @@ function parseAuthResponse(data: unknown): AuthPayload {
   } else if (d.expires_in) {
     const secs = Number(d.expires_in);
     if (!Number.isNaN(secs)) expiresAt = Date.now() + secs * 1000;
+  } else if (d.refresh_max_age_ms) {
+    // optional fallback if backend only gives refresh age
+    const ms = Number(d.refresh_max_age_ms);
+    if (!Number.isNaN(ms) && ms > 0) {
+      // this is not access expiry, but still better than null if your app relies on it loosely
+      expiresAt = Date.now() + ms;
+    }
   }
 
   return {
@@ -152,10 +155,15 @@ export const loginThunk = createAsyncThunk<AuthPayload, LoginCredentials, { reje
   "auth/login",
   async (credentials, { rejectWithValue }) => {
     try {
-      const res = await apiClient.post("/auth/login", credentials);
+      const res = await apiClient.post("/auth/login", credentials, {
+        hasAuth: false,
+        withCredentials: false,
+      });
+
       const parsed = parseAuthResponse(res.data);
       if (!parsed.access_token) throw new Error("No access_token returned");
-      return parsed; // user may be null; later /me will fill
+
+      return parsed;
     } catch (err) {
       return rejectWithValue(errToMessage(err, "Login failed"));
     }
@@ -166,7 +174,10 @@ export const meThunk = createAsyncThunk<UserLike, void, { rejectValue: RejectVal
   "auth/me",
   async (_, { rejectWithValue }) => {
     try {
-      const res = await apiClient.get("/auth/me");
+      const res = await apiClient.get("/auth/me", {
+        hasAuth: true,
+      });
+
       const user = extractUser(res.data);
       if (!user) throw new Error("Invalid /me payload");
       return user;
@@ -178,23 +189,54 @@ export const meThunk = createAsyncThunk<UserLike, void, { rejectValue: RejectVal
 
 export const refreshThunk = createAsyncThunk<AuthPayload, void, { rejectValue: RejectValue }>(
   "auth/refresh",
-  async (_, { rejectWithValue }) => {
+  async (_, { getState, rejectWithValue }) => {
     try {
-      const res = await apiClient.post("/auth/refresh", {});
+      const state = getState() as RootState;
+      const refreshToken =
+        stripBearer(state?.auth?.refreshToken) ||
+        stripBearer(localStorage.getItem(STORAGE_KEYS.refresh) || "");
+
+      const res = await apiClient.post(
+        "/auth/refresh",
+        refreshToken ? { refresh_token: refreshToken } : {},
+        {
+          hasAuth: false,
+          withCredentials: false,
+        }
+      );
+
       const parsed = parseAuthResponse(res.data);
       if (!parsed.access_token) throw new Error("No access_token returned");
+
+      // keep old refresh if backend didn't resend it
+      if (!parsed.refreshToken) {
+        parsed.refreshToken = refreshToken || null;
+      }
+
       return parsed;
-    } catch {
-      return rejectWithValue("Refresh failed");
+    } catch (err) {
+      return rejectWithValue(errToMessage(err, "Refresh failed"));
     }
   }
 );
 
-export const logoutThunk = createAsyncThunk<boolean, void, { rejectValue: RejectValue }>(
+export const logoutThunk = createAsyncThunk<boolean, void, { state: RootState; rejectValue: RejectValue }>(
   "auth/logout",
-  async (_, { rejectWithValue }) => {
+  async (_, { getState, rejectWithValue }) => {
     try {
-      await apiClient.post("/auth/logout", {});
+      const state = getState();
+      const refreshToken =
+        stripBearer(state?.auth?.refreshToken) ||
+        stripBearer(localStorage.getItem(STORAGE_KEYS.refresh) || "");
+
+      await apiClient.post(
+        "/auth/logout",
+        refreshToken ? { refresh_token: refreshToken } : {},
+        {
+          hasAuth: true,
+        }
+      );
+
       hardResetSocket("logout");
       return true;
     } catch (err) {
@@ -221,7 +263,6 @@ const authSlice = createSlice({
   name: "auth",
   initialState,
   reducers: {
-    // ✅ for verify-email or any manual hydrate
     hydrateAuth(state, action: PayloadAction<Record<string, any> | undefined>) {
       const payload = action.payload || {};
 
@@ -247,7 +288,6 @@ const authSlice = createSlice({
 
       state.error = null;
 
-      // ✅ IMPORTANT: do NOT force bootstrapped here
       saveAuthToStorage({
         access_token: state.access_token,
         refreshToken: state.refreshToken,
@@ -262,7 +302,7 @@ const authSlice = createSlice({
       state.expiresAt = null;
       state.status = "idle";
       state.error = null;
-      state.bootstrapped = true; // UI can continue
+      state.bootstrapped = true;
       clearAuthStorage();
     },
 
@@ -373,7 +413,6 @@ export const selectIsTokenExpired = (state: RootState) => {
   return Date.now() >= Number(expiresAt);
 };
 
-// backward compatibility
 export const selectToken = (state: RootState) => state.auth.access_token;
 
 export const selectBareToken = (state: RootState) =>

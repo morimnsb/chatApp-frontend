@@ -1,10 +1,15 @@
 // chatApp-frontend/src/features/chat/hooks/useRealtimeRouter.ts
 import { useCallback, useEffect, useRef } from "react";
-import { subscribeChatMessage, subscribeTyping } from "@/shared/ws/socketClient";
+import {
+  subscribeChatMessage,
+  subscribeChatNotify,
+  subscribeTyping,
+} from "@/shared/ws/socketClient";
 import { routeRealtimePayload } from "@/features/chat/utils/wsRouter.js";
-
-// ✅ Echo (Reverb)
 import { getOrCreateEcho } from "@/shared/config/realtime";
+
+import { useAppDispatch } from "@/app/store/hooks";
+import { updateMessages } from "@/features/chat/state/messageActions";
 
 type IncomingHandler = (evt: any) => void;
 
@@ -25,15 +30,24 @@ export default function useRealtimeRouter({
   realtime,
   bareToken,
 }: UseRealtimeRouterArgs) {
+  const appDispatch = useAppDispatch();
+
   const incomingRef = useRef<IncomingHandler | null>(null);
   const ctxRef = useRef({ selectedRoomId, currentUserId });
 
-  useEffect(() => void (ctxRef.current.selectedRoomId = selectedRoomId), [selectedRoomId]);
-  useEffect(() => void (ctxRef.current.currentUserId = currentUserId), [currentUserId]);
+  useEffect(() => {
+    ctxRef.current.selectedRoomId = selectedRoomId;
+  }, [selectedRoomId]);
+
+  useEffect(() => {
+    ctxRef.current.currentUserId = currentUserId;
+  }, [currentUserId]);
 
   const registerIncoming = useCallback((fn: IncomingHandler) => {
     incomingRef.current = fn;
-    return () => (incomingRef.current === fn ? (incomingRef.current = null) : undefined);
+    return () => {
+      if (incomingRef.current === fn) incomingRef.current = null;
+    };
   }, []);
 
   const routerDispatch = useCallback(
@@ -43,7 +57,9 @@ export default function useRealtimeRouter({
       if (a?.type === "chat/wsTyping") {
         return incomingRef.current?.({
           type: "typing_indicator",
+          room_id: p.roomId,
           roomId: p.roomId,
+          user_id: p.userId,
           userId: p.userId,
           isTyping: p.isTyping,
           at: p.at,
@@ -51,14 +67,42 @@ export default function useRealtimeRouter({
       }
 
       if (a?.type === "chat/wsMessage") {
-        return incomingRef.current?.({ type: "message", room_id: p.roomId, message: p.message });
+        appDispatch(
+          updateMessages({
+            type: "message",
+            room_id: p.roomId,
+            roomId: p.roomId,
+            message: p.message,
+          })
+        );
+
+        return incomingRef.current?.({
+          type: "message",
+          room_id: p.roomId,
+          roomId: p.roomId,
+          message: p.message,
+        });
       }
 
       if (a?.type === "chat/wsNotify") {
-        return onGlobalNotif?.({ type: "notify", room_id: p.roomId, roomId: p.roomId, message: p.message });
+        appDispatch(
+          updateMessages({
+            type: "notify",
+            room_id: p.roomId,
+            roomId: p.roomId,
+            message: p.message,
+          })
+        );
+
+        return onGlobalNotif?.({
+          type: "notify",
+          room_id: p.roomId,
+          roomId: p.roomId,
+          message: p.message,
+        });
       }
     },
-    [onGlobalNotif]
+    [appDispatch, onGlobalNotif]
   );
 
   const onRealtimePayload = useCallback(
@@ -73,16 +117,49 @@ export default function useRealtimeRouter({
     [routerDispatch]
   );
 
-  /* ---------------- Node (Socket.IO) ---------------- */
+  /* ---------------- Socket.IO (Node + Django) ---------------- */
   useEffect(() => {
-    if (String(effectiveKind).toLowerCase() !== "node") return;
+    const kind = String(effectiveKind).toLowerCase();
+    const isSocketIoBackend = kind === "node" || kind === "django";
+    if (!isSocketIoBackend) return;
 
-    const off1 = subscribeChatMessage((p: any) =>
-      onRealtimePayload(p, { eventName: "chat:message", source: "node" })
-    );
-    const off2 = subscribeTyping((p: any) =>
-      onRealtimePayload(p, { eventName: "typing", source: "node" })
-    );
+    const off1 = subscribeChatMessage((p: any) => {
+      onRealtimePayload(p, {
+        eventName: "chat:message",
+        source: kind,
+        selectedRoomId: ctxRef.current.selectedRoomId,
+        currentUserId: ctxRef.current.currentUserId,
+      });
+    });
+
+    const off2 = subscribeChatNotify((p: any) => {
+      onRealtimePayload(p, {
+        eventName: "chat:notify",
+        source: kind,
+        selectedRoomId: ctxRef.current.selectedRoomId,
+        currentUserId: ctxRef.current.currentUserId,
+      });
+    });
+
+    const off3 = subscribeTyping((p: any) => {
+      onRealtimePayload(p, {
+        eventName: "typing_indicator",
+        source: kind,
+        selectedRoomId: ctxRef.current.selectedRoomId,
+        currentUserId: ctxRef.current.currentUserId,
+      });
+
+      incomingRef.current?.({
+        type: "typing_indicator",
+        room_id: p?.room_id ?? p?.roomId ?? null,
+        roomId: p?.roomId ?? p?.room_id ?? null,
+        user_id: p?.user_id ?? p?.userId ?? null,
+        userId: p?.userId ?? p?.user_id ?? null,
+        isTyping: Boolean(p?.isTyping),
+        at: p?.at ?? Date.now(),
+        reason: p?.reason ?? null,
+      });
+    });
 
     return () => {
       try {
@@ -91,10 +168,13 @@ export default function useRealtimeRouter({
       try {
         off2?.();
       } catch {}
+      try {
+        off3?.();
+      } catch {}
     };
   }, [effectiveKind, onRealtimePayload]);
 
-  /* ---------------- Reverb (Echo) room join like Node (NO HTTP) ---------------- */
+  /* ---------------- Reverb ---------------- */
   const prevRoomRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -104,7 +184,6 @@ export default function useRealtimeRouter({
     const echo = getOrCreateEcho(bareToken);
     if (!echo) return;
 
-    // leave old room if changed
     const prev = prevRoomRef.current;
     if (prev && prev !== selectedRoomId) {
       try {
@@ -122,7 +201,6 @@ export default function useRealtimeRouter({
 
     const ch = echo.private(`chat.${selectedRoomId}`);
 
-    /* ✅ 1) ROOM MESSAGE (broadcastAs: 'chat.message') */
     const onRoomMessage = (p: any) =>
       onRealtimePayload(
         {
@@ -134,7 +212,6 @@ export default function useRealtimeRouter({
         { eventName: "chat.message", source: "reverb" }
       );
 
-    // listen to both dot + non-dot (Echo versions differ)
     try {
       ch.listen(".chat.message", onRoomMessage);
     } catch {}
@@ -142,30 +219,68 @@ export default function useRealtimeRouter({
       ch.listen("chat.message", onRoomMessage);
     } catch {}
 
-    /* ✅ 2) TYPING via WHISPER (NO HTTP) */
-    const onTypingWhisper = (p: any) =>
-      
-  onRealtimePayload(
-    {
-      type: "typing",
-      room_id: selectedRoomId,
-      roomId: selectedRoomId,
-      user_id: p?.user_id ?? p?.userId ?? null,
-      userId: p?.user_id ?? p?.userId ?? null,
-      isTyping: Boolean(p?.isTyping),
-      at: p?.at ?? Date.now(),
-    },
-    { eventName: "whisper:typing", source: "reverb" }
-  );
+    // اگر بعداً از backend broadcast event استفاده کردی، این هم فعال باشد
+    const onRoomTypingEvent = (p: any) => {
+      const evt = {
+        type: "typing",
+        room_id: p?.room_id ?? p?.roomId ?? selectedRoomId,
+        roomId: p?.roomId ?? p?.room_id ?? selectedRoomId,
+        user_id: p?.user_id ?? p?.userId ?? null,
+        userId: p?.userId ?? p?.user_id ?? null,
+        isTyping: Boolean(p?.isTyping),
+        at: p?.at ?? Date.now(),
+      };
 
-    // Echo whisper API
+      onRealtimePayload(evt, { eventName: "chat.typing", source: "reverb" });
+
+      incomingRef.current?.(evt);
+    };
+
+    try {
+      ch.listen(".chat.typing", onRoomTypingEvent);
+    } catch {}
+    try {
+      ch.listen("chat.typing", onRoomTypingEvent);
+    } catch {}
+
+    const onTypingWhisper = (p: any) => {
+      const evt = {
+        type: "typing",
+        room_id: p?.room_id ?? p?.roomId ?? selectedRoomId,
+        roomId: p?.roomId ?? p?.room_id ?? selectedRoomId,
+        user_id: p?.user_id ?? p?.userId ?? null,
+        userId: p?.userId ?? p?.user_id ?? null,
+        isTyping: Boolean(p?.isTyping),
+        at: p?.at ?? Date.now(),
+      };
+
+      onRealtimePayload(evt, {
+        eventName: "whisper:typing",
+        source: "reverb",
+      });
+
+      // ✅ این همان fix اصلی است
+      incomingRef.current?.(evt);
+    };
+
     try {
       ch.listenForWhisper("typing", onTypingWhisper);
     } catch {}
 
     return () => {
       try {
-        // optional (not available in all versions)
+        ch.stopListening(".chat.message");
+      } catch {}
+      try {
+        ch.stopListening("chat.message");
+      } catch {}
+      try {
+        ch.stopListening(".chat.typing");
+      } catch {}
+      try {
+        ch.stopListening("chat.typing");
+      } catch {}
+      try {
         ch.stopListeningForWhisper?.("typing");
       } catch {}
       try {
@@ -177,7 +292,7 @@ export default function useRealtimeRouter({
     };
   }, [effectiveKind, bareToken, selectedRoomId, onRealtimePayload]);
 
-  /* ---------------- Realtime bus (generic) ---------------- */
+  /* ---------------- Realtime bus ---------------- */
   useEffect(() => {
     return realtime?.registerHandler?.((p: any, m: any) => onRealtimePayload(p, m));
   }, [realtime, onRealtimePayload]);
